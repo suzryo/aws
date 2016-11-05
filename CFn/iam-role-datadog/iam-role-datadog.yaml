@@ -1,0 +1,101 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Parameters: 
+  DatadogExternalID: 
+    Default: ExternalID
+    Description: "Datadog AWS External ID"
+    Type: String
+Resources: 
+  DatadogAWSIntegrationRole: 
+    Type: "AWS::IAM::Role"
+    Properties: 
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - Action: "sts:AssumeRole"
+            Effect: Allow
+            Condition: 
+              StringEquals: 
+                "sts:ExternalId": 
+                  Ref: DatadogExternalID
+            Principal: 
+              AWS: "arn:aws:iam::464622532012:root"
+      Path: "/"
+  DatadogAWSIntegrationPolicy: 
+    Type: "AWS::IAM::Policy"
+    Properties: 
+      PolicyName: DatadogAWSIntegration
+      PolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - Action: 
+              - "autoscaling:Describe*"
+              - "cloudtrail:DescribeTrails"
+              - "cloudtrail:GetTrailStatus"
+              - "cloudwatch:Describe*"
+              - "cloudwatch:Get*"
+              - "cloudwatch:List*"
+              - "dynamodb:list*"
+              - "dynamodb:describe*"
+              - "ec2:Describe*"
+              - "ec2:Get*"
+              - "ecs:Describe*"
+              - "ecs:List*"
+              - "elasticache:Describe*"
+              - "elasticache:List*"
+              - "elasticloadbalancing:Describe*"
+              - "elasticmapreduce:List*"
+              - "elasticmapreduce:Describe*"
+              - "kinesis:List*"
+              - "kinesis:Describe*"
+              - "logs:Get*"
+              - "logs:Describe*"
+              - "logs:FilterLogEvents"
+              - "logs:TestMetricFilter"
+              - "rds:Describe*"
+              - "rds:List*"
+              - "route53:List*"
+              - "ses:Get*"
+              - "sns:List*"
+              - "sns:Publish"
+              - "sqs:GetQueueAttributes"
+              - "sqs:ListQueues"
+              - "sqs:ReceiveMessage"
+              - "support:*"
+            Effect: Allow
+            Resource: "*"
+      Roles: 
+        - Ref: DatadogAWSIntegrationRole
+  DatadogAWSCloudTrailReadOnlyAccessPolicy: 
+    Type: "AWS::IAM::Policy"
+    Properties: 
+      PolicyName: DatadogAWSCloudTrailReadOnlyAccess
+      PolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - Action: 
+              - "s3:ListBucket"
+              - "s3:GetBucketLocation"
+              - "s3:GetObject"
+            Effect: Allow
+            Resource: "arn:aws:s3:::cloudtrail-*"
+      Roles: 
+        - Ref: DatadogAWSIntegrationRole
+Outputs: 
+  RoleName: 
+    Description: "The IAM Role to share with Datadog (Name)"
+    Value: 
+      Ref: DatadogAWSIntegrationRole
+  RoleArn: 
+    Description: "The IAM Role to share with Datadog (ARN)"
+    Value: 
+      "Fn::GetAtt": 
+        - DatadogAWSIntegrationRole
+        - Arn
+  DatadogExternalID: 
+    Description: "Datadog AWS External ID"
+    Value: 
+      Ref: DatadogExternalID
+  AwsAccoutID: 
+    Description: "AWS Account ID"
+    Value: 
+      Ref: "AWS::AccountId"
