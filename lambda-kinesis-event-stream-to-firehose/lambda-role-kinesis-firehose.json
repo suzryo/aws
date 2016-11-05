@@ -1,0 +1,51 @@
+ {
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": "lambda:InvokeFunction",
+            "Resource": "*"
+        },
+        {
+            "Effect": "Allow",
+            "Action": "kinesis:ListStreams",
+            "Resource": "*"
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "kinesis:DescribeStream",
+                "kinesis:GetRecords",
+                "kinesis:GetShardIterator"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Effect": "Allow",
+            "Action": "logs:CreateLogGroup",
+            "Resource": "*"
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+            ],
+            "Resource": [
+                "*"
+            ]
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "firehose:DescribeDeliveryStream",
+                "firehose:ListDeliveryStreams",
+                "firehose:PutRecord",
+                "firehose:PutRecordBatch"
+            ],
+            "Resource": [
+                "*"
+            ]
+        }
+    ]
+}
