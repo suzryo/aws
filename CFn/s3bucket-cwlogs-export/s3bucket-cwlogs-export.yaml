@@ -1,0 +1,48 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "S3 Bucket for Cloudwatch Logs "
+Resources: 
+  S3bucketCwlogs: 
+    Type: "AWS::S3::Bucket"
+    Properties: 
+      AccessControl: PublicRead
+      BucketName: 
+        "Fn::Join": 
+          - "-"
+          - - "cloudwatch-logs-export"
+            - Ref: "AWS::Region"
+            - Ref: "AWS::AccountId"
+  S3bucketDeliveryBucketPolicy: 
+    Type: "AWS::S3::BucketPolicy"
+    Properties: 
+      Bucket: 
+        Ref: S3bucketCwlogs
+      PolicyDocument: 
+        Id: S3bucketCwlogsBucketPolicy
+        Statement: 
+          - Effect: Allow
+            Principal: 
+              Service: 
+                "Fn::Join": 
+                  - ""
+                  - - "logs."
+                    - Ref: "AWS::Region"
+                    - ".amazonaws.com"
+            Action: "s3:GetBucketAcl"
+            Resource: 
+              "Fn::Join": 
+                - ""
+                - - "arn:aws:s3:::"
+                  - Ref: S3bucketCwlogs
+          - Effect: Allow
+            Principal: 
+              Service: "logs.us-west-2.amazonaws.com"
+            Action: "s3:PutObject"
+            Resource: 
+              "Fn::Join": 
+                - ""
+                - - "arn:aws:s3:::"
+                  - Ref: S3bucketCwlogs
+                  - "/*"
+            Condition: 
+              StringEquals: 
+                "s3:x-amz-acl": "bucket-owner-full-control"
