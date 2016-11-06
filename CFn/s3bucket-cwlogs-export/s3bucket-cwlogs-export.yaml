@@ -35,7 +35,12 @@ Resources:
                   - Ref: S3bucketCwlogs
           - Effect: Allow
             Principal: 
-              Service: "logs.us-west-2.amazonaws.com"
+              Service: 
+                "Fn::Join": 
+                  - ""
+                  - - "logs."
+                    - Ref: "AWS::Region"
+                    - ".amazonaws.com"
             Action: "s3:PutObject"
             Resource: 
               "Fn::Join": 
