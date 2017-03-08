@@ -29,6 +29,7 @@ Resources:
         Statement: 
           - Action: 
               - "autoscaling:Describe*"
+              - "budgets:ViewBudget"
               - "cloudtrail:DescribeTrails"
               - "cloudtrail:GetTrailStatus"
               - "cloudwatch:Describe*"
@@ -45,6 +46,9 @@ Resources:
               - "elasticloadbalancing:Describe*"
               - "elasticmapreduce:List*"
               - "elasticmapreduce:Describe*"
+              - "es:ListTags"
+              - "es:ListDomainNames"
+              - "es:DescribeElasticsearchDomains"
               - "kinesis:List*"
               - "kinesis:Describe*"
               - "logs:Get*"
@@ -54,12 +58,12 @@ Resources:
               - "rds:Describe*"
               - "rds:List*"
               - "route53:List*"
+              - "s3:GetBucketTagging"
+              - "s3:ListAllMyBuckets"
               - "ses:Get*"
               - "sns:List*"
               - "sns:Publish"
-              - "sqs:GetQueueAttributes"
               - "sqs:ListQueues"
-              - "sqs:ReceiveMessage"
               - "support:*"
             Effect: Allow
             Resource: "*"
