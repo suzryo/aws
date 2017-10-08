@@ -118,6 +118,24 @@ Resources:
       - Key: Name
         Value: !Sub '${NameTagPrefix}-DatastoreRoute'
 
+  S3VPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal: '*'
+          Action:
+          - s3:*
+          Resource:
+          - arn:aws:s3:::*
+      RouteTableIds:
+      - !Ref 'FrontendRouteTable'
+      - !Ref 'ApplicationRouteTable'
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      VpcId: !Ref 'VPC'
+
   FrontendSubnet1:
     Type: AWS::EC2::Subnet
     DependsOn:
@@ -252,7 +270,6 @@ Resources:
       - !Ref 'DatastoreSubnet2'
 
   # SecurityGroup
-
   FrontendSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
