@@ -13,6 +13,10 @@ Parameters:
     Type: String
     Default: 240b::/16
     Description: IPv6 range to allow SSH (240b::/16 is JPNE)
+  DatastoreConnectionPort:
+    Type: String
+    Default: 3306
+    Description: Port for DB connection (3306:mysql)
 
 Mappings:
   StackConfig:
@@ -316,19 +320,19 @@ Resources:
         ToPort: '22'
         SourceSecurityGroupId: !Ref 'BastionSecurityGroup'
 
-  DatastoreMysqlSecurityGroup:
+  DatastoreRdsSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       VpcId: !Ref 'VPC'
-      GroupDescription: Security group for RDS (mysql)
+      GroupDescription: Security group for RDS
       SecurityGroupIngress:
       - IpProtocol: tcp
-        FromPort: '3306'
-        ToPort: '3306'
+        FromPort: !Ref 'DatastoreConnectionPort'
+        ToPort: !Ref 'DatastoreConnectionPort'
         CidrIp: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, ApplicationSubnet1, CIDR]}]
       - IpProtocol: tcp
-        FromPort: '3306'
-        ToPort: '3306'
+        FromPort: !Ref 'DatastoreConnectionPort'
+        ToPort: !Ref 'DatastoreConnectionPort'
         CidrIp: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, ApplicationSubnet2, CIDR]}]
 
   BastionSecurityGroup:
@@ -345,34 +349,50 @@ Resources:
 Outputs:
   VPC:
     Value: !Ref 'VPC'
+    Export:
+      Name: !Sub '${AWS::StackName}-VPC'
   Ipv4CidrBlock:
     Value: !GetAtt VPC.CidrBlock
   FrontendSubnet1:
     Value: !Ref 'FrontendSubnet1'
+    Export:
+      Name: !Sub '${AWS::StackName}-FrontendSubnet1'
   FrontendSubnet2:
     Value: !Ref 'FrontendSubnet2'
+    Export:
+      Name: !Sub '${AWS::StackName}-FrontendSubnet2'
   FrontendSubnet1Ipv4Cidr:
     Value: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet1, CIDR]}]
   FrontendSubnet2Ipv4Cidr:
     Value: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet2, CIDR]}]
   ApplicationSubnet1:
     Value: !Ref 'FrontendSubnet1'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApplicationSubnet1'
   ApplicationSubnet2:
     Value: !Ref 'FrontendSubnet2'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApplicationSubnet2'
   ApplicationSubnet1Ipv4Cidr:
     Value: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, ApplicationSubnet1, CIDR]}]
   ApplicationSubnet2Ipv4Cidr:
     Value: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, ApplicationSubnet2, CIDR]}]
   DatastoreSubnet1:
-    Value: !Ref 'FrontendSubnet1'
+    Value: !Ref 'DatastoreSubnet1'
+    Export:
+      Name: !Sub '${AWS::StackName}-DatastoreSubnet1'
   DatastoreSubnet2:
-    Value: !Ref 'FrontendSubnet2'
+    Value: !Ref 'DatastoreSubnet2'
+    Export:
+      Name: !Sub '${AWS::StackName}-DatastoreSubnet2'
   DatastoreSubnet1Ipv4Cidr:
     Value: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, DatastoreSubnet1, CIDR]}]
   DatastoreSubnet2Ipv4Cidr:
     Value: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, DatastoreSubnet2, CIDR]}]
   Ipv6CidrBlock:
     Value: !Select [ 0, !GetAtt VPC.Ipv6CidrBlocks ]
+    Export:
+      Name: !Sub '${AWS::StackName}-Ipv6CidrBlock'
   FrontendSubnet1Ipv6CidrBlocks:
     Value: !Select [ 0, !GetAtt FrontendSubnet1.Ipv6CidrBlocks ]
   FrontendSubnet2Ipv6CidrBlocks:
@@ -387,7 +407,31 @@ Outputs:
     Value: !Select [ 0, !GetAtt DatastoreSubnet2.Ipv6CidrBlocks ]
   FrontendRouteTable: 
     Value: !Ref 'FrontendRouteTable'
+    Export:
+      Name: !Sub '${AWS::StackName}-FrontendRouteTable'
   ApplicationRouteTable: 
     Value: !Ref 'ApplicationRouteTable'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApplicationRouteTable'
   DatastoreRouteTable: 
     Value: !Ref 'DatastoreRouteTable'
+    Export:
+      Name: !Sub '${AWS::StackName}-DatastoreRouteTable'
+
+  FrontendSecurityGroup: 
+    Value: !Ref 'FrontendSecurityGroup'
+    Export:
+      Name: !Sub '${AWS::StackName}-FrontendSecurityGroup'
+  ApplicationSecurityGroup: 
+    Value: !Ref 'ApplicationSecurityGroup'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApplicationSecurityGroup'
+  DatastoreRdsSecurityGroup: 
+    Value: !Ref 'DatastoreRdsSecurityGroup'
+    Export:
+      Name: !Sub '${AWS::StackName}-DatastoreRdsSecurityGroup'
+  BastionSecurityGroup: 
+    Value: !Ref 'BastionSecurityGroup'
+    Export:
+      Name: !Sub '${AWS::StackName}-BastionSecurityGroup'
+
