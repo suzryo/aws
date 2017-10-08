@@ -78,12 +78,16 @@ Resources:
       GatewayId: !Ref 'InternetGateway'
   FrontendSubnet1:
     Type: AWS::EC2::Subnet
-    DependsOn: AttachGateway
+    DependsOn:
+      - AttachGateway
+      - Ipv6VPCCidrBlock
     Properties:
       AvailabilityZone: !Select [0, !GetAZs {Ref: 'AWS::Region'}]
       CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet1,
             CIDR]}]
-      MapPublicIpOnLaunch: true
+      Ipv6CidrBlock: !Sub ['${Param1}00::/64', {Param1: !Select ['0', !Split ['00::/',
+              !Select [0, !GetAtt 'VPC.Ipv6CidrBlocks']]]}]
+      AssignIpv6AddressOnCreation: true
       Tags:
       - Key: Name
         Value: !Sub '${NameTagPrefix}-FrontendSubnet1'
@@ -95,12 +99,16 @@ Resources:
       RouteTableId: !Ref 'FrontendRouteTable'
   FrontendSubnet2:
     Type: AWS::EC2::Subnet
-    DependsOn: AttachGateway
+    DependsOn:
+      - AttachGateway
+      - Ipv6VPCCidrBlock
     Properties:
       AvailabilityZone: !Select [1, !GetAZs {Ref: 'AWS::Region'}]
       CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet2,
             CIDR]}]
-      MapPublicIpOnLaunch: true
+      Ipv6CidrBlock: !Sub ['${Param1}01::/64', {Param1: !Select ['0', !Split ['00::/',
+              !Select [0, !GetAtt 'VPC.Ipv6CidrBlocks']]]}]
+      AssignIpv6AddressOnCreation: true
       Tags:
       - Key: Name
         Value: !Sub '${NameTagPrefix}-FrontendSubnet2'
@@ -112,12 +120,16 @@ Resources:
       RouteTableId: !Ref 'FrontendRouteTable'
   ApplicationSubnet1:
     Type: AWS::EC2::Subnet
-    DependsOn: AttachGateway
+    DependsOn:
+      - AttachGateway
+      - Ipv6VPCCidrBlock
     Properties:
       AvailabilityZone: !Select [0, !GetAZs {Ref: 'AWS::Region'}]
       CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, ApplicationSubnet1,
             CIDR]}]
-      MapPublicIpOnLaunch: true
+      Ipv6CidrBlock: !Sub ['${Param1}02::/64', {Param1: !Select ['0', !Split ['00::/',
+              !Select [0, !GetAtt 'VPC.Ipv6CidrBlocks']]]}]
+      AssignIpv6AddressOnCreation: true
       Tags:
       - Key: Name
         Value: !Sub '${NameTagPrefix}-ApplicationSubnet1'
@@ -129,12 +141,16 @@ Resources:
       RouteTableId: !Ref 'ApplicationRouteTable'
   ApplicationSubnet2:
     Type: AWS::EC2::Subnet
-    DependsOn: AttachGateway
+    DependsOn:
+      - AttachGateway
+      - Ipv6VPCCidrBlock
     Properties:
       AvailabilityZone: !Select [1, !GetAZs {Ref: 'AWS::Region'}]
       CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, ApplicationSubnet2,
             CIDR]}]
-      MapPublicIpOnLaunch: true
+      Ipv6CidrBlock: !Sub ['${Param1}03::/64', {Param1: !Select ['0', !Split ['00::/',
+              !Select [0, !GetAtt 'VPC.Ipv6CidrBlocks']]]}]
+      AssignIpv6AddressOnCreation: true
       Tags:
       - Key: Name
         Value: !Sub '${NameTagPrefix}-ApplicationSubnet2'
@@ -169,30 +185,7 @@ Resources:
       RouteTableId: !Ref 'ApplicationRouteTable'
       DestinationIpv6CidrBlock: ::/0
       EgressOnlyInternetGatewayId: !Ref 'EgressOnlyInternetGateway'
-  FrontendSubnet1CidrBlock:
-    Type: AWS::EC2::SubnetCidrBlock
-    Properties:
-      Ipv6CidrBlock: !Sub ['${Param1}00::/64', {Param1: !Select ['0', !Split ['00::/',
-              !Select [0, !GetAtt 'VPC.Ipv6CidrBlocks']]]}]
-      SubnetId: !Ref 'FrontendSubnet1'
-  FrontendSubnet2CidrBlock:
-    Type: AWS::EC2::SubnetCidrBlock
-    Properties:
-      Ipv6CidrBlock: !Sub ['${Param1}01::/64', {Param1: !Select ['0', !Split ['00::/',
-              !Select [0, !GetAtt 'VPC.Ipv6CidrBlocks']]]}]
-      SubnetId: !Ref 'FrontendSubnet2'
-  ApplicationSubnet1CidrBlock:
-    Type: AWS::EC2::SubnetCidrBlock
-    Properties:
-      Ipv6CidrBlock: !Sub ['${Param1}02::/64', {Param1: !Select ['0', !Split ['00::/',
-              !Select [0, !GetAtt 'VPC.Ipv6CidrBlocks']]]}]
-      SubnetId: !Ref 'ApplicationSubnet1'
-  ApplicationSubnet2CidrBlock:
-    Type: AWS::EC2::SubnetCidrBlock
-    Properties:
-      Ipv6CidrBlock: !Sub ['${Param1}03::/64', {Param1: !Select ['0', !Split ['00::/',
-              !Select [0, !GetAtt 'VPC.Ipv6CidrBlocks']]]}]
-      SubnetId: !Ref 'ApplicationSubnet2'
+
 
 Outputs:
   VPC:
