@@ -2,14 +2,18 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: VPC Network Template (ipv6 enable)
 Parameters:
   VPCCIDR:
-    Description: First and Second Octet of VPC, For example xxx.xxx
+    Description: First and Second Octet of VPC, For example xxx.xxx (192.168 / 172.16-31 / 10.0-255)
     Type: String
     Default: '192.168'
-    ConstraintDescription: xxx.xxx
   NameTagPrefix:
     Type: String
     Default: test-ipv6
     Description: Prefix of Name tags.
+  AllowSshV6ipRange:
+    Type: String
+    Default: 240b::/16
+    Description: IPv6 range to allow SSH (240b::/16 is JPNE)
+
 Mappings:
   StackConfig:
     VPC:
@@ -26,12 +30,12 @@ Mappings:
       CIDR: .8.0/24
     DatastoreSubnet2:
       CIDR: .9.0/24
+
 Resources:
   VPC:
     Type: AWS::EC2::VPC
     Properties:
-      CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, VPC,
-            CIDR]}]
+      CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, VPC, CIDR]}]
       EnableDnsSupport: true
       EnableDnsHostnames: true
       InstanceTenancy: default
@@ -121,8 +125,7 @@ Resources:
     - Ipv6VPCCidrBlock
     Properties:
       AvailabilityZone: !Select [0, !GetAZs {Ref: 'AWS::Region'}]
-      CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet1,
-            CIDR]}]
+      CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet1, CIDR]}]
       Ipv6CidrBlock: !Sub ['${Param1}00::/64', {Param1: !Select ['0', !Split ['00::/',
               !Select [0, !GetAtt 'VPC.Ipv6CidrBlocks']]]}]
       AssignIpv6AddressOnCreation: true
@@ -143,8 +146,7 @@ Resources:
     - Ipv6VPCCidrBlock
     Properties:
       AvailabilityZone: !Select [1, !GetAZs {Ref: 'AWS::Region'}]
-      CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet2,
-            CIDR]}]
+      CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet2, CIDR]}]
       Ipv6CidrBlock: !Sub ['${Param1}01::/64', {Param1: !Select ['0', !Split ['00::/',
               !Select [0, !GetAtt 'VPC.Ipv6CidrBlocks']]]}]
       AssignIpv6AddressOnCreation: true
@@ -165,8 +167,7 @@ Resources:
     - Ipv6VPCCidrBlock
     Properties:
       AvailabilityZone: !Select [0, !GetAZs {Ref: 'AWS::Region'}]
-      CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, ApplicationSubnet1,
-            CIDR]}]
+      CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, ApplicationSubnet1, CIDR]}]
       Ipv6CidrBlock: !Sub ['${Param1}04::/64', {Param1: !Select ['0', !Split ['00::/',
               !Select [0, !GetAtt 'VPC.Ipv6CidrBlocks']]]}]
       AssignIpv6AddressOnCreation: true
@@ -187,8 +188,7 @@ Resources:
       - Ipv6VPCCidrBlock
     Properties:
       AvailabilityZone: !Select [1, !GetAZs {Ref: 'AWS::Region'}]
-      CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, ApplicationSubnet2,
-            CIDR]}]
+      CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, ApplicationSubnet2, CIDR]}]
       Ipv6CidrBlock: !Sub ['${Param1}05::/64', {Param1: !Select ['0', !Split ['00::/',
               !Select [0, !GetAtt 'VPC.Ipv6CidrBlocks']]]}]
       AssignIpv6AddressOnCreation: true
@@ -209,8 +209,7 @@ Resources:
     - Ipv6VPCCidrBlock
     Properties:
       AvailabilityZone: !Select [0, !GetAZs {Ref: 'AWS::Region'}]
-      CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, DatastoreSubnet1,
-            CIDR]}]
+      CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, DatastoreSubnet1, CIDR]}]
       Ipv6CidrBlock: !Sub ['${Param1}08::/64', {Param1: !Select ['0', !Split ['00::/',
               !Select [0, !GetAtt 'VPC.Ipv6CidrBlocks']]]}]
       AssignIpv6AddressOnCreation: true
@@ -231,8 +230,7 @@ Resources:
     - Ipv6VPCCidrBlock
     Properties:
       AvailabilityZone: !Select [1, !GetAZs {Ref: 'AWS::Region'}]
-      CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, DatastoreSubnet2,
-            CIDR]}]
+      CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, DatastoreSubnet2, CIDR]}]
       Ipv6CidrBlock: !Sub ['${Param1}09::/64', {Param1: !Select ['0', !Split ['00::/',
               !Select [0, !GetAtt 'VPC.Ipv6CidrBlocks']]]}]
       AssignIpv6AddressOnCreation: true
@@ -253,6 +251,88 @@ Resources:
       - !Ref 'DatastoreSubnet1'
       - !Ref 'DatastoreSubnet2'
 
+  # SecurityGroup
+
+  FrontendSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VPC'
+      GroupDescription: Security group for ELB (http/https)
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIp: '0.0.0.0/0'
+      - IpProtocol: tcp
+        FromPort: '443'
+        ToPort: '443'
+        CidrIp: '0.0.0.0/0'
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIpv6: '::/0'
+      - IpProtocol: tcp
+        FromPort: '443'
+        ToPort: '443'
+        CidrIpv6: '::/0'
+
+  ApplicationSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VPC'
+      GroupDescription: Security group for EC2 (Application)
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIp: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet1, CIDR]}]
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIp: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet2, CIDR]}]
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIpv6: !Select [ 0, !GetAtt FrontendSubnet1.Ipv6CidrBlocks ]
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIpv6: !Select [ 0, !GetAtt FrontendSubnet2.Ipv6CidrBlocks ]
+  
+  DatastoreMysqlSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VPC'
+      GroupDescription: Security group for RDS (mysql)
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '3306'
+        ToPort: '3306'
+        CidrIp: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, ApplicationSubnet1, CIDR]}]
+      - IpProtocol: tcp
+        FromPort: '3306'
+        ToPort: '3306'
+        CidrIp: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, ApplicationSubnet2, CIDR]}]
+      - IpProtocol: tcp
+        FromPort: '3306'
+        ToPort: '3306'
+        CidrIpv6: !Select [ 0, !GetAtt ApplicationSubnet1.Ipv6CidrBlocks ]
+      - IpProtocol: tcp
+        FromPort: '3306'
+        ToPort: '3306'
+        CidrIpv6: !Select [ 0, !GetAtt ApplicationSubnet2.Ipv6CidrBlocks ]
+
+  BastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VPC'
+      GroupDescription: Security group for Bastion (ssh)
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIpv6: !Ref 'AllowSshV6ipRange'
+
 Outputs:
   VPC:
     Value: !Ref 'VPC'
@@ -263,25 +343,25 @@ Outputs:
   FrontendSubnet2:
     Value: !Ref 'FrontendSubnet2'
   FrontendSubnet1Ipv4Cidr:
-    Value: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet1,CIDR]}]
+    Value: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet1, CIDR]}]
   FrontendSubnet2Ipv4Cidr:
-    Value: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet2,CIDR]}]
+    Value: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet2, CIDR]}]
   ApplicationSubnet1:
     Value: !Ref 'FrontendSubnet1'
   ApplicationSubnet2:
     Value: !Ref 'FrontendSubnet2'
   ApplicationSubnet1Ipv4Cidr:
-    Value: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet1,CIDR]}]
+    Value: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, ApplicationSubnet1, CIDR]}]
   ApplicationSubnet2Ipv4Cidr:
-    Value: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet2,CIDR]}]
+    Value: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, ApplicationSubnet2, CIDR]}]
   DatastoreSubnet1:
     Value: !Ref 'FrontendSubnet1'
   DatastoreSubnet2:
     Value: !Ref 'FrontendSubnet2'
   DatastoreSubnet1Ipv4Cidr:
-    Value: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet1,CIDR]}]
+    Value: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, DatastoreSubnet1, CIDR]}]
   DatastoreSubnet2Ipv4Cidr:
-    Value: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet2,CIDR]}]
+    Value: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, DatastoreSubnet2, CIDR]}]
   Ipv6CidrBlock:
     Value: !Select [ 0, !GetAtt VPC.Ipv6CidrBlocks ]
   FrontendSubnet1Ipv6CidrBlocks:
