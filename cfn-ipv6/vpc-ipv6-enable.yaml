@@ -32,6 +32,7 @@ Mappings:
       CIDR: .9.0/24
 
 Resources:
+  # VPC
   VPC:
     Type: AWS::EC2::VPC
     Properties:
@@ -47,6 +48,8 @@ Resources:
     Properties:
       AmazonProvidedIpv6CidrBlock: true
       VpcId: !Ref 'VPC'
+
+  # Gateway
   InternetGateway:
     Type: AWS::EC2::InternetGateway
     Properties:
@@ -63,6 +66,7 @@ Resources:
     Properties:
       VpcId: !Ref 'VPC'
 
+  # Route / RouteTable
   FrontendRouteTable:
     Type: AWS::EC2::RouteTable
     DependsOn: AttachGateway
@@ -85,7 +89,6 @@ Resources:
       RouteTableId: !Ref 'FrontendRouteTable'
       DestinationIpv6CidrBlock: ::/0
       GatewayId: !Ref 'InternetGateway'
-
   ApplicationRouteTable:
     Type: AWS::EC2::RouteTable
     DependsOn: AttachGateway
@@ -108,7 +111,6 @@ Resources:
       RouteTableId: !Ref 'ApplicationRouteTable'
       DestinationIpv6CidrBlock: ::/0
       EgressOnlyInternetGatewayId: !Ref 'EgressOnlyInternetGateway'
-
   DatastoreRouteTable:
     Type: AWS::EC2::RouteTable
     DependsOn: AttachGateway
@@ -117,7 +119,6 @@ Resources:
       Tags:
       - Key: Name
         Value: !Sub '${NameTagPrefix}-DatastoreRoute'
-
   S3VPCEndpoint:
     Type: AWS::EC2::VPCEndpoint
     Properties:
@@ -131,11 +132,11 @@ Resources:
           Resource:
           - arn:aws:s3:::*
       RouteTableIds:
-      - !Ref 'FrontendRouteTable'
       - !Ref 'ApplicationRouteTable'
       ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
       VpcId: !Ref 'VPC'
 
+  # Subnet
   FrontendSubnet1:
     Type: AWS::EC2::Subnet
     DependsOn:
@@ -156,7 +157,6 @@ Resources:
     Properties:
       SubnetId: !Ref 'FrontendSubnet1'
       RouteTableId: !Ref 'FrontendRouteTable'
-
   FrontendSubnet2:
     Type: AWS::EC2::Subnet
     DependsOn:
@@ -177,7 +177,6 @@ Resources:
     Properties:
       SubnetId: !Ref 'FrontendSubnet2'
       RouteTableId: !Ref 'FrontendRouteTable'
-
   ApplicationSubnet1:
     Type: AWS::EC2::Subnet
     DependsOn:
@@ -198,7 +197,6 @@ Resources:
     Properties:
       SubnetId: !Ref 'ApplicationSubnet1'
       RouteTableId: !Ref 'ApplicationRouteTable'
-
   ApplicationSubnet2:
     Type: AWS::EC2::Subnet
     DependsOn:
@@ -219,7 +217,6 @@ Resources:
     Properties:
       SubnetId: !Ref 'ApplicationSubnet2'
       RouteTableId: !Ref 'ApplicationRouteTable'
-
   DatastoreSubnet1:
     Type: AWS::EC2::Subnet
     DependsOn:
@@ -240,7 +237,6 @@ Resources:
     Properties:
       SubnetId: !Ref 'DatastoreSubnet1'
       RouteTableId: !Ref 'DatastoreRouteTable'
-
   DatastoreSubnet2:
     Type: AWS::EC2::Subnet
     DependsOn:
@@ -315,7 +311,11 @@ Resources:
         FromPort: '80'
         ToPort: '80'
         CidrIpv6: !Select [ 0, !GetAtt FrontendSubnet2.Ipv6CidrBlocks ]
-  
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        SourceSecurityGroupId: !Ref 'BastionSecurityGroup'
+
   DatastoreMysqlSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -330,14 +330,6 @@ Resources:
         FromPort: '3306'
         ToPort: '3306'
         CidrIp: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, ApplicationSubnet2, CIDR]}]
-      - IpProtocol: tcp
-        FromPort: '3306'
-        ToPort: '3306'
-        CidrIpv6: !Select [ 0, !GetAtt ApplicationSubnet1.Ipv6CidrBlocks ]
-      - IpProtocol: tcp
-        FromPort: '3306'
-        ToPort: '3306'
-        CidrIpv6: !Select [ 0, !GetAtt ApplicationSubnet2.Ipv6CidrBlocks ]
 
   BastionSecurityGroup:
     Type: AWS::EC2::SecurityGroup
