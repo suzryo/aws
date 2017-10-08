@@ -8,7 +8,7 @@ Parameters:
     ConstraintDescription: xxx.xxx
   NameTagPrefix:
     Type: String
-    Default: v6test
+    Default: test-ipv6
     Description: Prefix of Name tags.
 Mappings:
   StackConfig:
@@ -19,9 +19,13 @@ Mappings:
     FrontendSubnet2:
       CIDR: .1.0/24
     ApplicationSubnet1:
-      CIDR: .2.0/24
+      CIDR: .4.0/24
     ApplicationSubnet2:
-      CIDR: .3.0/24
+      CIDR: .5.0/24
+    DatastoreSubnet1:
+      CIDR: .8.0/24
+    DatastoreSubnet2:
+      CIDR: .9.0/24
 Resources:
   VPC:
     Type: AWS::EC2::VPC
@@ -34,7 +38,11 @@ Resources:
       Tags:
       - Key: Name
         Value: !Sub '${NameTagPrefix}-VPC'
-  #ipv4 config
+  Ipv6VPCCidrBlock:
+    Type: AWS::EC2::VPCCidrBlock
+    Properties:
+      AmazonProvidedIpv6CidrBlock: true
+      VpcId: !Ref 'VPC'
   InternetGateway:
     Type: AWS::EC2::InternetGateway
     Properties:
@@ -46,6 +54,11 @@ Resources:
     Properties:
       VpcId: !Ref 'VPC'
       InternetGatewayId: !Ref 'InternetGateway'
+  EgressOnlyInternetGateway:
+    Type: AWS::EC2::EgressOnlyInternetGateway
+    Properties:
+      VpcId: !Ref 'VPC'
+
   FrontendRouteTable:
     Type: AWS::EC2::RouteTable
     DependsOn: AttachGateway
@@ -61,6 +74,14 @@ Resources:
       RouteTableId: !Ref 'FrontendRouteTable'
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref 'InternetGateway'
+  FrontendRouteV6:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref 'FrontendRouteTable'
+      DestinationIpv6CidrBlock: ::/0
+      GatewayId: !Ref 'InternetGateway'
+
   ApplicationRouteTable:
     Type: AWS::EC2::RouteTable
     DependsOn: AttachGateway
@@ -76,11 +97,28 @@ Resources:
       RouteTableId: !Ref 'ApplicationRouteTable'
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref 'InternetGateway'
+  ApplicationRouteV6:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref 'ApplicationRouteTable'
+      DestinationIpv6CidrBlock: ::/0
+      EgressOnlyInternetGatewayId: !Ref 'EgressOnlyInternetGateway'
+
+  DatastoreRouteTable:
+    Type: AWS::EC2::RouteTable
+    DependsOn: AttachGateway
+    Properties:
+      VpcId: !Ref 'VPC'
+      Tags:
+      - Key: Name
+        Value: !Sub '${NameTagPrefix}-DatastoreRoute'
+
   FrontendSubnet1:
     Type: AWS::EC2::Subnet
     DependsOn:
-      - AttachGateway
-      - Ipv6VPCCidrBlock
+    - AttachGateway
+    - Ipv6VPCCidrBlock
     Properties:
       AvailabilityZone: !Select [0, !GetAZs {Ref: 'AWS::Region'}]
       CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet1,
@@ -97,11 +135,12 @@ Resources:
     Properties:
       SubnetId: !Ref 'FrontendSubnet1'
       RouteTableId: !Ref 'FrontendRouteTable'
+
   FrontendSubnet2:
     Type: AWS::EC2::Subnet
     DependsOn:
-      - AttachGateway
-      - Ipv6VPCCidrBlock
+    - AttachGateway
+    - Ipv6VPCCidrBlock
     Properties:
       AvailabilityZone: !Select [1, !GetAZs {Ref: 'AWS::Region'}]
       CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet2,
@@ -118,16 +157,17 @@ Resources:
     Properties:
       SubnetId: !Ref 'FrontendSubnet2'
       RouteTableId: !Ref 'FrontendRouteTable'
+
   ApplicationSubnet1:
     Type: AWS::EC2::Subnet
     DependsOn:
-      - AttachGateway
-      - Ipv6VPCCidrBlock
+    - AttachGateway
+    - Ipv6VPCCidrBlock
     Properties:
       AvailabilityZone: !Select [0, !GetAZs {Ref: 'AWS::Region'}]
       CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, ApplicationSubnet1,
             CIDR]}]
-      Ipv6CidrBlock: !Sub ['${Param1}02::/64', {Param1: !Select ['0', !Split ['00::/',
+      Ipv6CidrBlock: !Sub ['${Param1}04::/64', {Param1: !Select ['0', !Split ['00::/',
               !Select [0, !GetAtt 'VPC.Ipv6CidrBlocks']]]}]
       AssignIpv6AddressOnCreation: true
       Tags:
@@ -139,6 +179,7 @@ Resources:
     Properties:
       SubnetId: !Ref 'ApplicationSubnet1'
       RouteTableId: !Ref 'ApplicationRouteTable'
+
   ApplicationSubnet2:
     Type: AWS::EC2::Subnet
     DependsOn:
@@ -148,7 +189,7 @@ Resources:
       AvailabilityZone: !Select [1, !GetAZs {Ref: 'AWS::Region'}]
       CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, ApplicationSubnet2,
             CIDR]}]
-      Ipv6CidrBlock: !Sub ['${Param1}03::/64', {Param1: !Select ['0', !Split ['00::/',
+      Ipv6CidrBlock: !Sub ['${Param1}05::/64', {Param1: !Select ['0', !Split ['00::/',
               !Select [0, !GetAtt 'VPC.Ipv6CidrBlocks']]]}]
       AssignIpv6AddressOnCreation: true
       Tags:
@@ -161,31 +202,56 @@ Resources:
       SubnetId: !Ref 'ApplicationSubnet2'
       RouteTableId: !Ref 'ApplicationRouteTable'
 
-  #ipv6 config
-  Ipv6VPCCidrBlock:
-    Type: AWS::EC2::VPCCidrBlock
+  DatastoreSubnet1:
+    Type: AWS::EC2::Subnet
+    DependsOn:
+    - AttachGateway
+    - Ipv6VPCCidrBlock
     Properties:
-      AmazonProvidedIpv6CidrBlock: true
+      AvailabilityZone: !Select [0, !GetAZs {Ref: 'AWS::Region'}]
+      CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, DatastoreSubnet1,
+            CIDR]}]
+      Ipv6CidrBlock: !Sub ['${Param1}08::/64', {Param1: !Select ['0', !Split ['00::/',
+              !Select [0, !GetAtt 'VPC.Ipv6CidrBlocks']]]}]
+      AssignIpv6AddressOnCreation: true
+      Tags:
+      - Key: Name
+        Value: !Sub '${NameTagPrefix}-DatastoreSubnet1'
       VpcId: !Ref 'VPC'
-  EgressOnlyInternetGateway:
-    Type: AWS::EC2::EgressOnlyInternetGateway
+  DatastoreSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      VpcId: !Ref 'VPC'
-  FrontendRouteV6:
-    Type: AWS::EC2::Route
-    DependsOn: AttachGateway
-    Properties:
-      RouteTableId: !Ref 'FrontendRouteTable'
-      DestinationIpv6CidrBlock: ::/0
-      GatewayId: !Ref 'InternetGateway'
-  ApplicationRouteV6:
-    Type: AWS::EC2::Route
-    DependsOn: AttachGateway
-    Properties:
-      RouteTableId: !Ref 'ApplicationRouteTable'
-      DestinationIpv6CidrBlock: ::/0
-      EgressOnlyInternetGatewayId: !Ref 'EgressOnlyInternetGateway'
+      SubnetId: !Ref 'DatastoreSubnet1'
+      RouteTableId: !Ref 'DatastoreRouteTable'
 
+  DatastoreSubnet2:
+    Type: AWS::EC2::Subnet
+    DependsOn:
+    - AttachGateway
+    - Ipv6VPCCidrBlock
+    Properties:
+      AvailabilityZone: !Select [1, !GetAZs {Ref: 'AWS::Region'}]
+      CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, DatastoreSubnet2,
+            CIDR]}]
+      Ipv6CidrBlock: !Sub ['${Param1}09::/64', {Param1: !Select ['0', !Split ['00::/',
+              !Select [0, !GetAtt 'VPC.Ipv6CidrBlocks']]]}]
+      AssignIpv6AddressOnCreation: true
+      Tags:
+      - Key: Name
+        Value: !Sub '${NameTagPrefix}-DatastoreSubnet2'
+      VpcId: !Ref 'VPC'
+  DatastoreSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref 'DatastoreSubnet2'
+      RouteTableId: !Ref 'DatastoreRouteTable'
+  DatastoreDBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnets available for the RDS DB Instance
+      SubnetIds:
+      - !Ref 'DatastoreSubnet1'
+      - !Ref 'DatastoreSubnet2'
 
 Outputs:
   VPC:
@@ -208,6 +274,14 @@ Outputs:
     Value: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet1,CIDR]}]
   ApplicationSubnet2Ipv4Cidr:
     Value: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet2,CIDR]}]
+  DatastoreSubnet1:
+    Value: !Ref 'FrontendSubnet1'
+  DatastoreSubnet2:
+    Value: !Ref 'FrontendSubnet2'
+  DatastoreSubnet1Ipv4Cidr:
+    Value: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet1,CIDR]}]
+  DatastoreSubnet2Ipv4Cidr:
+    Value: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet2,CIDR]}]
   Ipv6CidrBlock:
     Value: !Select [ 0, !GetAtt VPC.Ipv6CidrBlocks ]
   FrontendSubnet1Ipv6CidrBlocks:
@@ -218,7 +292,13 @@ Outputs:
     Value: !Select [ 0, !GetAtt ApplicationSubnet1.Ipv6CidrBlocks ]
   ApplicationSubnet2Ipv6CidrBlocks:
     Value: !Select [ 0, !GetAtt ApplicationSubnet2.Ipv6CidrBlocks ]
+  DatastoreSubnet1Ipv6CidrBlocks:
+    Value: !Select [ 0, !GetAtt DatastoreSubnet1.Ipv6CidrBlocks ]
+  DatastoreSubnet2Ipv6CidrBlocks:
+    Value: !Select [ 0, !GetAtt DatastoreSubnet2.Ipv6CidrBlocks ]
   FrontendRouteTable: 
     Value: !Ref 'FrontendRouteTable'
   ApplicationRouteTable: 
     Value: !Ref 'ApplicationRouteTable'
+  DatastoreRouteTable: 
+    Value: !Ref 'DatastoreRouteTable'
