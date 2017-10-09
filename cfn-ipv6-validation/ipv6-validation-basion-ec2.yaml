@@ -1,0 +1,93 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: EC2 (Bassion) Template (ipv6 validation)
+Parameters:
+
+  VpcStack:
+    Description: VPC Cloudformation Stack
+    Type: String
+    Default: ipv6-test
+
+  Ec2KeyName:
+    Description: EC2 SSH KEY
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: key
+  Ec2InstanceType:
+    Description: EC2 InstanceType
+    Type: String
+    Default: t2.nano
+  Ec2ImageId:
+    Description: EC2 ImageId(AMI)
+    Type: String
+    Default: ami-2a69be4c
+  
+Resources:
+  Ec2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/AWSCloudFormationReadOnlyAccess
+
+  Ec2RolePolicies:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: Ec2RolePolicies
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - logs:PutLogEvents
+          - logs:CreateLogStream
+          Resource:
+          - arn:aws:logs:*:*:log-group:*
+        - Effect: Allow
+          Action:
+          - firehose:Put*
+          - kinesis:Put*
+          Resource:
+          - '*'
+      Roles:
+      - !Ref 'Ec2Role'
+  Ec2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+      - !Ref 'Ec2Role'
+
+  BastionEc2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref 'Ec2ImageId'
+      InstanceType: !Ref 'Ec2InstanceType'
+      KeyName: !Ref 'Ec2KeyName'
+      NetworkInterfaces:
+      - AssociatePublicIpAddress: 'true'
+        DeviceIndex: '0'
+        GroupSet:
+        - Fn::ImportValue:
+           !Sub "${VpcStack}-BastionSecurityGroup"
+        SubnetId: 
+          Fn::ImportValue:
+           !Sub "${VpcStack}-FrontendSubnet1"
+      IamInstanceProfile: !Ref 'Ec2InstanceProfile'
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          yum update -y
+          yum install jq awslogs -y
+          chkconfig awslogs on
+          service awslogs start
+      Tags:
+      - Key: Name
+        Value: Bastion-ipv6-test

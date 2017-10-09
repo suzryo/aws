@@ -1,0 +1,90 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: RDS (MySQL) Template (ipv6 validation)
+Parameters:
+  VpcStack:
+    Description: VPC Cloudformation Stack
+    Type: String
+    Default: ipv6-test
+  DatastoreDBInstanceClass:
+    Description: Datastore DBInstanceClass
+    Type: String
+    Default: db.t2.micro
+  DatastoreAllocatedStorage:
+    Description: Datastore AllocatedStorage
+    Type: String
+    Default: 5
+  DatastoreDBInstanceIdentifier:
+    Description: DBInstanceIdentifier
+    Type: String
+    Default: ipv6-test-rds
+  DatastoreMultiAZ:
+    Description: MultiAZ (true/false)
+    Type: String
+    Default: false
+  DatastoreDBName:
+    Description: Datastore DBName
+    Type: String
+    Default: mydb
+  DatastoreMasterUsername:
+    Description: DB MasterUsername
+    Type: String
+    Default: admin
+  DatastoreMasterUserPassword:
+    Description: DB MasterUserPassword
+    Type: String
+    Default: mydbPassword##
+    NoEcho: true
+Resources:
+  DatastoreDBParameterGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      Description: Datastore DBParameterGroup
+      Family: MySQL5.6
+      Parameters:
+        character_set_server: utf8
+        character_set_client: utf8
+        character_set_connection: utf8
+        character_set_results: utf8
+        character_set_database: utf8
+        general_log: 1
+        log_output: FILE
+        long_query_time: 1
+  DatastoreOptionGroup:
+    Type: AWS::RDS::OptionGroup
+    Properties:
+      EngineName: mysql
+      MajorEngineVersion: 5.6
+      OptionGroupDescription: Datastore OptionGroup
+      OptionConfigurations: !Ref 'AWS::NoValue'
+  DatastoreDBInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Ref 'DatastoreDBInstanceIdentifier'
+      DBInstanceClass: !Ref 'DatastoreDBInstanceClass'
+      AllocatedStorage: !Ref 'DatastoreAllocatedStorage'
+      Engine: MySQL
+      EngineVersion: 5.6
+      MultiAZ: !Ref 'DatastoreMultiAZ'
+      DBName: !Ref 'DatastoreDBName'
+      MasterUsername: !Ref 'DatastoreMasterUsername'
+      StorageType: gp2
+      MasterUserPassword: !Ref 'DatastoreMasterUserPassword'
+      PreferredBackupWindow: 17:00-17:30
+      PreferredMaintenanceWindow: Wed:18:00-Wed:18:30
+      BackupRetentionPeriod: 7
+      DBParameterGroupName: !Ref 'DatastoreDBParameterGroup'
+      OptionGroupName: !Ref 'DatastoreOptionGroup'
+      DBSubnetGroupName: !ImportValue
+        Fn::Sub: ${VpcStack}-DatastoreDBSubnetGroup
+      VPCSecurityGroups:
+      - !ImportValue
+        Fn::Sub: ${VpcStack}-DatastoreRdsSecurityGroup
+      Tags:
+      - Key: Name
+        Value: !Ref 'DatastoreDBName'
+
+Outputs:
+  DatastoreInstanceEndpoint:
+    Description: DatastoreDBInstance Endpoint
+    Value: !GetAtt 'DatastoreDBInstance.Endpoint.Address'

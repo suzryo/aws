@@ -1,0 +1,441 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: VPC Network Template (ipv6 validation)
+Parameters:
+  VPCCIDR:
+    Description: First and Second Octet of VPC, For example xxx.xxx (192.168 / 172.16-31 / 10.0-255)
+    Type: String
+    Default: '192.168'
+  NameTagPrefix:
+    Type: String
+    Default: ipv6-test
+    Description: Prefix of Name tags.
+  AllowSshV6ipRange:
+    Type: String
+    Default: 240b::/16
+    Description: IPv6 range to allow SSH (240b::/16 is JPNE)
+  DatastoreConnectionPort:
+    Type: String
+    Default: 3306
+    Description: Port for DB connection (3306:mysql)
+Mappings:
+  StackConfig:
+    VPC:
+      CIDR: .0.0/20
+    FrontendSubnet1:
+      CIDR: .0.0/24
+    FrontendSubnet2:
+      CIDR: .1.0/24
+    ApplicationSubnet1:
+      CIDR: .4.0/24
+    ApplicationSubnet2:
+      CIDR: .5.0/24
+    DatastoreSubnet1:
+      CIDR: .8.0/24
+    DatastoreSubnet2:
+      CIDR: .9.0/24
+
+Resources:
+  # VPC
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, VPC, CIDR]}]
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      InstanceTenancy: default
+      Tags:
+      - Key: Name
+        Value: !Sub '${NameTagPrefix}-VPC'
+  Ipv6VPCCidrBlock:
+    Type: AWS::EC2::VPCCidrBlock
+    Properties:
+      AmazonProvidedIpv6CidrBlock: true
+      VpcId: !Ref 'VPC'
+
+  # Gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+      - Key: Name
+        Value: !Sub '${NameTagPrefix}-IGW'
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref 'VPC'
+      InternetGatewayId: !Ref 'InternetGateway'
+  EgressOnlyInternetGateway:
+    Type: AWS::EC2::EgressOnlyInternetGateway
+    Properties:
+      VpcId: !Ref 'VPC'
+
+  # Route / RouteTable
+  FrontendRouteTable:
+    Type: AWS::EC2::RouteTable
+    DependsOn: AttachGateway
+    Properties:
+      VpcId: !Ref 'VPC'
+      Tags:
+      - Key: Name
+        Value: !Sub '${NameTagPrefix}-FrontendRoute'
+  FrontendRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref 'FrontendRouteTable'
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref 'InternetGateway'
+  FrontendRouteV6:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref 'FrontendRouteTable'
+      DestinationIpv6CidrBlock: ::/0
+      GatewayId: !Ref 'InternetGateway'
+  ApplicationRouteTable:
+    Type: AWS::EC2::RouteTable
+    DependsOn: AttachGateway
+    Properties:
+      VpcId: !Ref 'VPC'
+      Tags:
+      - Key: Name
+        Value: !Sub '${NameTagPrefix}-ApplicationRoute'
+  ApplicationRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref 'ApplicationRouteTable'
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref 'InternetGateway'
+  ApplicationRouteV6:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref 'ApplicationRouteTable'
+      DestinationIpv6CidrBlock: ::/0
+      EgressOnlyInternetGatewayId: !Ref 'EgressOnlyInternetGateway'
+  DatastoreRouteTable:
+    Type: AWS::EC2::RouteTable
+    DependsOn: AttachGateway
+    Properties:
+      VpcId: !Ref 'VPC'
+      Tags:
+      - Key: Name
+        Value: !Sub '${NameTagPrefix}-DatastoreRoute'
+  S3VPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal: '*'
+          Action:
+          - s3:*
+          Resource:
+          - arn:aws:s3:::*
+      RouteTableIds:
+      - !Ref 'ApplicationRouteTable'
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      VpcId: !Ref 'VPC'
+
+  # Subnet
+  FrontendSubnet1:
+    Type: AWS::EC2::Subnet
+    DependsOn:
+    - AttachGateway
+    - Ipv6VPCCidrBlock
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs {Ref: 'AWS::Region'}]
+      CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet1, CIDR]}]
+      Ipv6CidrBlock: !Sub ['${Param1}00::/64', {Param1: !Select ['0', !Split ['00::/',
+              !Select [0, !GetAtt 'VPC.Ipv6CidrBlocks']]]}]
+      AssignIpv6AddressOnCreation: true
+      Tags:
+      - Key: Name
+        Value: !Sub '${NameTagPrefix}-FrontendSubnet1'
+      VpcId: !Ref 'VPC'
+  FrontendSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref 'FrontendSubnet1'
+      RouteTableId: !Ref 'FrontendRouteTable'
+  FrontendSubnet2:
+    Type: AWS::EC2::Subnet
+    DependsOn:
+    - AttachGateway
+    - Ipv6VPCCidrBlock
+    Properties:
+      AvailabilityZone: !Select [1, !GetAZs {Ref: 'AWS::Region'}]
+      CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet2, CIDR]}]
+      Ipv6CidrBlock: !Sub ['${Param1}01::/64', {Param1: !Select ['0', !Split ['00::/',
+              !Select [0, !GetAtt 'VPC.Ipv6CidrBlocks']]]}]
+      AssignIpv6AddressOnCreation: true
+      Tags:
+      - Key: Name
+        Value: !Sub '${NameTagPrefix}-FrontendSubnet2'
+      VpcId: !Ref 'VPC'
+  FrontendSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref 'FrontendSubnet2'
+      RouteTableId: !Ref 'FrontendRouteTable'
+  ApplicationSubnet1:
+    Type: AWS::EC2::Subnet
+    DependsOn:
+    - AttachGateway
+    - Ipv6VPCCidrBlock
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs {Ref: 'AWS::Region'}]
+      CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, ApplicationSubnet1, CIDR]}]
+      Ipv6CidrBlock: !Sub ['${Param1}04::/64', {Param1: !Select ['0', !Split ['00::/',
+              !Select [0, !GetAtt 'VPC.Ipv6CidrBlocks']]]}]
+      AssignIpv6AddressOnCreation: true
+      Tags:
+      - Key: Name
+        Value: !Sub '${NameTagPrefix}-ApplicationSubnet1'
+      VpcId: !Ref 'VPC'
+  ApplicationSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref 'ApplicationSubnet1'
+      RouteTableId: !Ref 'ApplicationRouteTable'
+  ApplicationSubnet2:
+    Type: AWS::EC2::Subnet
+    DependsOn:
+      - AttachGateway
+      - Ipv6VPCCidrBlock
+    Properties:
+      AvailabilityZone: !Select [1, !GetAZs {Ref: 'AWS::Region'}]
+      CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, ApplicationSubnet2, CIDR]}]
+      Ipv6CidrBlock: !Sub ['${Param1}05::/64', {Param1: !Select ['0', !Split ['00::/',
+              !Select [0, !GetAtt 'VPC.Ipv6CidrBlocks']]]}]
+      AssignIpv6AddressOnCreation: true
+      Tags:
+      - Key: Name
+        Value: !Sub '${NameTagPrefix}-ApplicationSubnet2'
+      VpcId: !Ref 'VPC'
+  ApplicationSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref 'ApplicationSubnet2'
+      RouteTableId: !Ref 'ApplicationRouteTable'
+  DatastoreSubnet1:
+    Type: AWS::EC2::Subnet
+    DependsOn:
+    - AttachGateway
+    - Ipv6VPCCidrBlock
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs {Ref: 'AWS::Region'}]
+      CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, DatastoreSubnet1, CIDR]}]
+      Ipv6CidrBlock: !Sub ['${Param1}08::/64', {Param1: !Select ['0', !Split ['00::/',
+              !Select [0, !GetAtt 'VPC.Ipv6CidrBlocks']]]}]
+      AssignIpv6AddressOnCreation: true
+      Tags:
+      - Key: Name
+        Value: !Sub '${NameTagPrefix}-DatastoreSubnet1'
+      VpcId: !Ref 'VPC'
+  DatastoreSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref 'DatastoreSubnet1'
+      RouteTableId: !Ref 'DatastoreRouteTable'
+  DatastoreSubnet2:
+    Type: AWS::EC2::Subnet
+    DependsOn:
+    - AttachGateway
+    - Ipv6VPCCidrBlock
+    Properties:
+      AvailabilityZone: !Select [1, !GetAZs {Ref: 'AWS::Region'}]
+      CidrBlock: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, DatastoreSubnet2, CIDR]}]
+      Ipv6CidrBlock: !Sub ['${Param1}09::/64', {Param1: !Select ['0', !Split ['00::/',
+              !Select [0, !GetAtt 'VPC.Ipv6CidrBlocks']]]}]
+      AssignIpv6AddressOnCreation: true
+      Tags:
+      - Key: Name
+        Value: !Sub '${NameTagPrefix}-DatastoreSubnet2'
+      VpcId: !Ref 'VPC'
+  DatastoreSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref 'DatastoreSubnet2'
+      RouteTableId: !Ref 'DatastoreRouteTable'
+  DatastoreDBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnets available for the RDS DB Instance
+      SubnetIds:
+      - !Ref 'DatastoreSubnet1'
+      - !Ref 'DatastoreSubnet2'
+
+  # SecurityGroup
+  FrontendSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VPC'
+      GroupDescription: Security group for ELB (http/https)
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIp: '0.0.0.0/0'
+      - IpProtocol: tcp
+        FromPort: '443'
+        ToPort: '443'
+        CidrIp: '0.0.0.0/0'
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIpv6: '::/0'
+      - IpProtocol: tcp
+        FromPort: '443'
+        ToPort: '443'
+        CidrIpv6: '::/0'
+
+  ApplicationSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VPC'
+      GroupDescription: Security group for EC2 (Application)
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIp: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet1, CIDR]}]
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIp: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet2, CIDR]}]
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIpv6: !Select [ 0, !GetAtt FrontendSubnet1.Ipv6CidrBlocks ]
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIpv6: !Select [ 0, !GetAtt FrontendSubnet2.Ipv6CidrBlocks ]
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        SourceSecurityGroupId: !Ref 'BastionSecurityGroup'
+
+  DatastoreRdsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VPC'
+      GroupDescription: Security group for RDS
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: !Ref 'DatastoreConnectionPort'
+        ToPort: !Ref 'DatastoreConnectionPort'
+        CidrIp: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, ApplicationSubnet1, CIDR]}]
+      - IpProtocol: tcp
+        FromPort: !Ref 'DatastoreConnectionPort'
+        ToPort: !Ref 'DatastoreConnectionPort'
+        CidrIp: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, ApplicationSubnet2, CIDR]}]
+
+  BastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VPC'
+      GroupDescription: Security group for Bastion (ssh)
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIpv6: !Ref 'AllowSshV6ipRange'
+
+Outputs:
+  VPC:
+    Value: !Ref 'VPC'
+    Export:
+      Name: !Sub '${AWS::StackName}-VPC'
+  Ipv4CidrBlock:
+    Value: !GetAtt VPC.CidrBlock
+  FrontendSubnet1:
+    Value: !Ref 'FrontendSubnet1'
+    Export:
+      Name: !Sub '${AWS::StackName}-FrontendSubnet1'
+  FrontendSubnet2:
+    Value: !Ref 'FrontendSubnet2'
+    Export:
+      Name: !Sub '${AWS::StackName}-FrontendSubnet2'
+  FrontendSubnet1Ipv4Cidr:
+    Value: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet1, CIDR]}]
+  FrontendSubnet2Ipv4Cidr:
+    Value: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, FrontendSubnet2, CIDR]}]
+  ApplicationSubnet1:
+    Value: !Ref 'ApplicationSubnet1'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApplicationSubnet1'
+  ApplicationSubnet2:
+    Value: !Ref 'ApplicationSubnet2'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApplicationSubnet2'
+  ApplicationSubnet1Ipv4Cidr:
+    Value: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, ApplicationSubnet1, CIDR]}]
+  ApplicationSubnet2Ipv4Cidr:
+    Value: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, ApplicationSubnet2, CIDR]}]
+  DatastoreSubnet1:
+    Value: !Ref 'DatastoreSubnet1'
+    Export:
+      Name: !Sub '${AWS::StackName}-DatastoreSubnet1'
+  DatastoreSubnet2:
+    Value: !Ref 'DatastoreSubnet2'
+    Export:
+      Name: !Sub '${AWS::StackName}-DatastoreSubnet2'
+  DatastoreSubnet1Ipv4Cidr:
+    Value: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, DatastoreSubnet1, CIDR]}]
+  DatastoreSubnet2Ipv4Cidr:
+    Value: !Sub ['${VPCCIDR}${Param1}', {Param1: !FindInMap [StackConfig, DatastoreSubnet2, CIDR]}]
+  Ipv6CidrBlock:
+    Value: !Select [ 0, !GetAtt VPC.Ipv6CidrBlocks ]
+    Export:
+      Name: !Sub '${AWS::StackName}-Ipv6CidrBlock'
+  FrontendSubnet1Ipv6CidrBlocks:
+    Value: !Select [ 0, !GetAtt FrontendSubnet1.Ipv6CidrBlocks ]
+  FrontendSubnet2Ipv6CidrBlocks:
+    Value: !Select [ 0, !GetAtt FrontendSubnet2.Ipv6CidrBlocks ]
+  ApplicationSubnet1Ipv6CidrBlocks:
+    Value: !Select [ 0, !GetAtt ApplicationSubnet1.Ipv6CidrBlocks ]
+  ApplicationSubnet2Ipv6CidrBlocks:
+    Value: !Select [ 0, !GetAtt ApplicationSubnet2.Ipv6CidrBlocks ]
+  DatastoreSubnet1Ipv6CidrBlocks:
+    Value: !Select [ 0, !GetAtt DatastoreSubnet1.Ipv6CidrBlocks ]
+  DatastoreSubnet2Ipv6CidrBlocks:
+    Value: !Select [ 0, !GetAtt DatastoreSubnet2.Ipv6CidrBlocks ]
+  FrontendRouteTable: 
+    Value: !Ref 'FrontendRouteTable'
+    Export:
+      Name: !Sub '${AWS::StackName}-FrontendRouteTable'
+  ApplicationRouteTable: 
+    Value: !Ref 'ApplicationRouteTable'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApplicationRouteTable'
+  DatastoreRouteTable: 
+    Value: !Ref 'DatastoreRouteTable'
+    Export:
+      Name: !Sub '${AWS::StackName}-DatastoreRouteTable'
+
+  DatastoreDBSubnetGroup: 
+    Value: !Ref 'DatastoreDBSubnetGroup'
+    Export:
+      Name: !Sub '${AWS::StackName}-DatastoreDBSubnetGroup'
+
+  FrontendSecurityGroup: 
+    Value: !Ref 'FrontendSecurityGroup'
+    Export:
+      Name: !Sub '${AWS::StackName}-FrontendSecurityGroup'
+  ApplicationSecurityGroup: 
+    Value: !Ref 'ApplicationSecurityGroup'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApplicationSecurityGroup'
+  DatastoreRdsSecurityGroup: 
+    Value: !Ref 'DatastoreRdsSecurityGroup'
+    Export:
+      Name: !Sub '${AWS::StackName}-DatastoreRdsSecurityGroup'
+  BastionSecurityGroup: 
+    Value: !Ref 'BastionSecurityGroup'
+    Export:
+      Name: !Sub '${AWS::StackName}-BastionSecurityGroup'
+

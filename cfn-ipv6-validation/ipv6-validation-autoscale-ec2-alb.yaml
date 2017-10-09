@@ -1,0 +1,261 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: EC2 Application(autoscale) ELB(alb) Template (ipv6 validation)
+Parameters:
+
+  VpcStack:
+    Description: VPC Cloudformation Stack
+    Type: String
+    Default: ipv6-test
+
+  Ec2KeyName:
+    Description: EC2 SSH KEY
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: key
+  Ec2InstanceType:
+    Description: EC2 InstanceType
+    Type: String
+    Default: t2.nano
+  Ec2ImageId:
+    Description: EC2 ImageId(AMI)
+    Type: String
+    Default: ami-2a69be4c
+  ELbName:
+    Description: ELbName
+    Type: String
+    Default: ipv6-test-elb
+  ApplicationEc2Name:
+    Description: Application Ec2 Name
+    Type: String
+    Default: Application
+  ApplicationEc2AutoscaleMinSize: 
+    Description: "AutoScalingGroup MinSize"
+    Type: String
+    Default: "1"
+  ApplicationEc2AutoscaleMaxSize: 
+    Description: "AutoScalingGroup MaxSize"
+    Type: String
+    Default: "2"
+  ApplicationEc2AutoscaleDesiredCapacity: 
+    Description: "AutoScalingGroup DesiredCapacity"
+    Type: String
+    Default: "2"    
+
+Resources:
+  Ec2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess
+      - arn:aws:iam::aws:policy/AWSCloudFormationReadOnlyAccess
+
+  Ec2RolePolicies:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: Ec2RolePolicies
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - s3:List*
+          Resource:
+          - arn:aws:s3:::*
+        - Effect: Allow
+          Action:
+          - logs:PutLogEvents
+          - logs:CreateLogStream
+          Resource:
+          - arn:aws:logs:*:*:log-group:*
+        - Effect: Allow
+          Action:
+          - firehose:Put*
+          - kinesis:Put*
+          Resource:
+          - '*'
+      Roles:
+      - !Ref 'Ec2Role'
+  Ec2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+      - !Ref 'Ec2Role'
+
+  S3bucketElblogs:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+        - Id: DeleteRule
+          Status: Enabled
+          ExpirationInDays: '45'
+  S3bucketEbElblogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DependsOn:
+    - S3bucketElblogs
+    Properties:
+      Bucket: !Ref 'S3bucketElblogs'
+      PolicyDocument:
+        Id: S3bucketElblogsPolicy
+        Statement:
+        - Sid: AddPerm
+          Effect: Allow
+          Principal:
+            AWS:
+            - arn:aws:iam::127311923021:root
+            - arn:aws:iam::033677994240:root
+            - arn:aws:iam::027434742980:root
+            - arn:aws:iam::797873946194:root
+            - arn:aws:iam::985666609251:root
+            - arn:aws:iam::156460612806:root
+            - arn:aws:iam::054676820928:root
+            - arn:aws:iam::652711504416:root
+            - arn:aws:iam::582318560864:root
+            - arn:aws:iam::600734575887:root
+            - arn:aws:iam::114774131450:root
+            - arn:aws:iam::783225319266:root
+            - arn:aws:iam::718504428378:root
+            - arn:aws:iam::507241528517:root
+          Action:
+          - s3:PutObject
+          Resource:
+          - !Sub 'arn:aws:s3:::${S3bucketElblogs}/*'
+
+  AlbLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Subnets:
+      - !ImportValue
+        Fn::Sub: ${VpcStack}-FrontendSubnet1
+      - !ImportValue
+        Fn::Sub: ${VpcStack}-FrontendSubnet2
+      LoadBalancerAttributes:
+      - Key: idle_timeout.timeout_seconds
+        Value: '60'
+      - Key: access_logs.s3.enabled
+        Value: true
+      - Key: access_logs.s3.bucket
+        Value: !Ref 'S3bucketElblogs'
+      - Key: access_logs.s3.prefix
+        Value: !Ref 'ELbName'
+      SecurityGroups:
+      - !ImportValue
+        Fn::Sub: ${VpcStack}-FrontendSecurityGroup
+      Tags:
+      - Key: Name
+        Value: !Ref 'ELbName'
+      Type: application
+      IpAddressType: dualstack
+
+  AlbTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 20
+      HealthCheckPath: /
+      HealthCheckPort: traffic-port
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 5
+      Matcher:
+        HttpCode: 200
+      Port: 80
+      Protocol: HTTP
+      Tags:
+      - Key: Name
+        Value: AlbTargetGroup
+      TargetGroupAttributes:
+      - Key: deregistration_delay.timeout_seconds
+        Value: 20
+      - Key: stickiness.enabled
+        Value: false
+      UnhealthyThresholdCount: 3
+      VpcId: !ImportValue
+        Fn::Sub: ${VpcStack}-VPC
+
+  AlbListenerHTTP:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn: !Ref 'AlbTargetGroup'
+      LoadBalancerArn: !Ref 'AlbLoadBalancer'
+      Port: '80'
+      Protocol: HTTP
+
+  ApplicationEc2LaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      InstanceType: !Ref 'Ec2InstanceType'
+      KeyName: !Ref 'Ec2KeyName'
+      ImageId: !Ref 'Ec2ImageId'
+      IamInstanceProfile: !Ref 'Ec2InstanceProfile'
+      SecurityGroups:
+      - Fn::ImportValue:
+         !Sub "${VpcStack}-ApplicationSecurityGroup"
+      AssociatePublicIpAddress: 'true'
+      InstanceMonitoring: 'false'
+      UserData:
+        "Fn::Base64":
+          !Sub |
+            #!/bin/bash -xe
+            yum update -y
+            yum install httpd mysql jq awslogs -y
+            curl http://169.254.169.254/latest/meta-data/instance-id > /var/www/html/index.html
+            chkconfig httpd on
+            service httpd start
+            chkconfig awslogs on
+            service awslogs start
+            yum update -y aws-cfn-bootstrap
+            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource ApplicationEc2AutoScalingGroup --region ${AWS::Region}
+
+  ApplicationEc2AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    UpdatePolicy:
+      AutoScalingReplacingUpdate:
+        WillReplace: true
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT10M
+      AutoScalingCreationPolicy:
+        MinSuccessfulInstancesPercent: 100
+    Properties:
+      VPCZoneIdentifier:
+      - !ImportValue
+        Fn::Sub: ${VpcStack}-ApplicationSubnet1
+      - !ImportValue
+        Fn::Sub: ${VpcStack}-ApplicationSubnet2
+      LaunchConfigurationName: !Ref 'ApplicationEc2LaunchConfig'
+      MinSize: !Ref 'ApplicationEc2AutoscaleMinSize'
+      MaxSize: !Ref 'ApplicationEc2AutoscaleMaxSize'
+      MetricsCollection:
+      - Granularity: 1Minute
+      DesiredCapacity: !Ref 'ApplicationEc2AutoscaleDesiredCapacity'
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: '1500'
+      Cooldown: '300'
+      TargetGroupARNs:
+      - !Ref 'AlbTargetGroup'
+      Tags:
+      - Key: Name
+        Value: !Ref 'ApplicationEc2Name'
+        PropagateAtLaunch: 'true'
+      TerminationPolicies:
+      - OldestInstance
+
+Outputs:
+  AlbDNSName:
+    Value: 
+      !GetAtt AlbLoadBalancer.DNSName
