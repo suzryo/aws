@@ -1,0 +1,22 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Parameters: 
+  KinesisStreamName: 
+    Default: "stream-01"
+    Description: "Kinesis Stream Name"
+    Type: String
+  KinesisShardCount: 
+    Default: 1
+    Description: "ShardCount Name"
+    Type: String
+Resources: 
+  KinesisStream: 
+    Type: "AWS::Kinesis::Stream"
+    Properties: 
+      Name: 
+        Ref: KinesisStreamName
+      ShardCount: 
+        Ref: KinesisShardCount
+      Tags: 
+        - Key: Name
+          Value: 
+            Ref: KinesisStreamName
