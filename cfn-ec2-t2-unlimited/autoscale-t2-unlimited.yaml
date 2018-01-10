@@ -1,0 +1,120 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AutoScaling EC2 Template (test-t2-unlimited)
+Parameters:
+  Ec2KeyName:
+    Description: EC2 SSH KEY
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: key
+  Ec2InstanceType:
+    Description: EC2 InstanceType
+    Type: String
+    Default: t2.nano
+  Ec2ImageId:
+    Description: EC2 ImageId(Amazon Linux AMI 2017.09.1 (HVM), SSD Volume Type)
+    Type: String
+    Default: ami-33c25b55
+  VpcId:
+    Description: SecurityGroup ID
+    Type: AWS::EC2::VPC::Id
+  VpcSubnetId1:
+    Description: SubnetId-1
+    Type: AWS::EC2::Subnet::Id
+  VpcSubnetId2:
+    Description: SubnetId-2
+    Type: AWS::EC2::Subnet::Id
+  SshAllowIpRenge:
+    Type: String
+    Default: 172.0.0.1/32
+
+Resources:
+  Ec2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+  Ec2RolePolicies:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: Ec2RolePolicies
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - ec2:ModifyInstanceCreditSpecification
+          - ec2:DescribeInstanceCreditSpecifications
+          Resource:
+          - '*'
+      Roles:
+      - !Ref 'Ec2Role'
+  Ec2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+      - !Ref 'Ec2Role'
+
+  Ec2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VpcId'
+      GroupDescription: EC2 SecurityGroup (SSH)
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        CidrIp: !Ref 'SshAllowIpRenge'
+
+  Ec2InstanceLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      InstanceType: !Ref 'Ec2InstanceType'
+      KeyName: !Ref 'Ec2KeyName'
+      ImageId: !Ref 'Ec2ImageId'
+      IamInstanceProfile: !Ref 'Ec2InstanceProfile'
+      SecurityGroups:
+      - !Ref 'Ec2SecurityGroup'
+      AssociatePublicIpAddress: 'true'
+      InstanceMonitoring: 'false'
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          yum update aws-cli -y
+          INSTANCE_ID=`curl http://169.254.169.254/latest/meta-data/instance-id`
+          REGION=`curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone | sed -e 's/.$//'`
+          SPECIFICATIONS_JSON="[{\"InstanceId\": \"${INSTANCE_ID}\",\"CpuCredits\": \"unlimited\"}]"
+          echo "INSTANCE_ID: ${INSTANCE_ID}"
+          echo "REGION: ${REGION}"
+          echo "SPECIFICATIONS_JSON: ${SPECIFICATIONS_JSON}"
+          aws --region ${REGION} ec2 describe-instance-credit-specifications --instance-id ${INSTANCE_ID}
+          aws --region ${REGION} ec2 modify-instance-credit-specification --instance-credit-specification "${SPECIFICATIONS_JSON}"
+          aws --region ${REGION} ec2 describe-instance-credit-specifications --instance-id ${INSTANCE_ID}
+
+  Ec2InstanceAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+      - !Ref 'VpcSubnetId1'
+      - !Ref 'VpcSubnetId2'
+      LaunchConfigurationName: !Ref 'Ec2InstanceLaunchConfig'
+      MinSize: 1
+      MaxSize: 1
+      MetricsCollection:
+      - Granularity: 1Minute
+      DesiredCapacity: 1
+      Tags:
+      - Key: Name
+        Value: test-autoscale-t2-unlimited-enable
+        PropagateAtLaunch: 'true'
+      TerminationPolicies:
+      - OldestInstance
+
+
