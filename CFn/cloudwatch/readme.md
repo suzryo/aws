@@ -44,17 +44,17 @@ a.ngcnt, b.okcnt, c.totalcnt
  from
 (
 SELECT cast(count(1) as DOUBLE) as ngcnt
-FROM "cloudwatch0212"."tb4" 
+FROM "cloudwatch02"."tb4" 
 where average < 66
 ) a,
 (
 SELECT cast(count(1) as DOUBLE) as okcnt
-FROM "cloudwatch0212"."tb4" 
+FROM "cloudwatch02"."tb4" 
 where average >= 66
 ) b,
 (
 SELECT cast(count(1) as DOUBLE) as totalcnt
-FROM "cloudwatch0212"."tb4" 
+FROM "cloudwatch02"."tb4" 
 ) c
 ```
 
