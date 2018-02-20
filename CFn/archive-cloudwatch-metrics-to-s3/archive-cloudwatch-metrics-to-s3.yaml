@@ -176,7 +176,7 @@ Resources:
           - Effect: Allow
             Action:
             - sns:Publish
-            Resource: !Ref 'Step5SnsTopic'
+            Resource: !Ref 'Step7SnsTopic'
           - Effect: Allow
             Action:
             - CloudWatch:ListMetrics
@@ -245,27 +245,27 @@ Resources:
       Environment:
         Variables:
           'dynamodbtablename': !Ref 'Step3DynamodbTable'
-          'SnsTopicArn': !Ref 'Step5SnsTopic'
+          'SnsTopicArn': !Ref 'Step7SnsTopic'
       Tags:
       - Key: CloudformationArn
         Value: !Ref 'AWS::StackId'
 
-  Step5SnsTopic:
+  Step7SnsTopic:
     Type: AWS::SNS::Topic
     Properties:
       DisplayName: trigger-consumer
       Subscription:
-      - Endpoint: !GetAtt [Step6SqsQueue, Arn]
+      - Endpoint: !GetAtt [Step8SqsQueue, Arn]
         Protocol: sqs
-  Step6SqsQueue:
+  Step8SqsQueue:
     Type: AWS::SQS::Queue
     Properties:
       RedrivePolicy:
-        deadLetterTargetArn: !GetAtt [Step6SqsDeadLetterQueue, Arn]
+        deadLetterTargetArn: !GetAtt [Step8SqsDeadLetterQueue, Arn]
         maxReceiveCount: 10
-  Step6SqsDeadLetterQueue:
+  Step8SqsDeadLetterQueue:
     Type: AWS::SQS::Queue
-  Step6SqsQueuePolicy:
+  Step8SqsQueuePolicy:
     Type: AWS::SQS::QueuePolicy
     Properties:
       PolicyDocument:
@@ -280,28 +280,28 @@ Resources:
           Resource: '*'
           Condition:
             ArnEquals:
-              aws:SourceArn: !Ref 'Step5SnsTopic'
+              aws:SourceArn: !Ref 'Step7SnsTopic'
       Queues:
-      - !Ref 'Step6SqsQueue'
+      - !Ref 'Step8SqsQueue'
 
-  Step7ScheduledRule:
+  Step9ScheduledRule:
     Type: AWS::Events::Rule
     Properties:
       Description: ScheduledRule
       ScheduleExpression: cron(16 0 * * ? *)
       State: ENABLED
       Targets:
-      - Arn: !Ref 'Step8SnsTopic'
-        Id: Step8SnsTopic
+      - Arn: !Ref 'Step10SnsTopic'
+        Id: Step10SnsTopic
 
-  Step8SnsTopic:
+  Step10SnsTopic:
     Type: AWS::SNS::Topic
     Properties:
       DisplayName: trigger-sqs-worker
       Subscription:
-      - Endpoint: !GetAtt 'Step9LambdaFunction.Arn'
+      - Endpoint: !GetAtt 'Step11LambdaFunction.Arn'
         Protocol: lambda
-  Step8SnsPolicy:
+  Step10SnsPolicy:
     Type: AWS::SNS::TopicPolicy
     Properties:
       PolicyDocument:
@@ -315,23 +315,23 @@ Resources:
             - events.amazonaws.com
           Action:
           - sns:Publish
-          Resource: !Ref 'Step8SnsTopic'
+          Resource: !Ref 'Step10SnsTopic'
       Topics:
-      - !Ref 'Step8SnsTopic'
+      - !Ref 'Step10SnsTopic'
 
-  Step9LambdaPermission:
+  Step11LambdaPermission:
     Type: AWS::Lambda::Permission
     Properties:
-      FunctionName: !Ref 'Step9LambdaFunction'
+      FunctionName: !Ref 'Step11LambdaFunction'
       Action: lambda:InvokeFunction
       Principal: sns.amazonaws.com
-      SourceArn: !Ref 'Step8SnsTopic'
-  Step9LogGroupLambda:
+      SourceArn: !Ref 'Step10SnsTopic'
+  Step11LogGroupLambda:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Join ['', [/aws/lambda/, !Ref 'Step9LambdaFunction']]
+      LogGroupName: !Join ['', [/aws/lambda/, !Ref 'Step11LambdaFunction']]
       RetentionInDays: 14
-  Step9LambdaRole:
+  Step11LambdaRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
@@ -358,13 +358,13 @@ Resources:
           - Effect: Allow
             Action:
             - s3:PutObject
-            Resource: !Join ['', [!GetAtt 'Step10S3Bucket.Arn', /*]]
+            Resource: !Join ['', [!GetAtt 'Step12S3Bucket.Arn', /*]]
           - Effect: Allow
             Action:
             - sqs:DeleteMessage
             - sqs:ReceiveMessage
             - sqs:GetQueueUrl
-            Resource: !GetAtt 'Step6SqsQueue.Arn'
+            Resource: !GetAtt 'Step8SqsQueue.Arn'
           - Effect: Allow
             Action:
             - lambda:InvokeFunction
@@ -376,11 +376,11 @@ Resources:
             - CloudWatch:GetMetricStatistics
             Resource: '*'
 
-  Step9LambdaFunction:
+  Step11LambdaFunction:
     Type: AWS::Lambda::Function
     Properties:
       Handler: index.lambda_handler
-      Role: !GetAtt Step9LambdaRole.Arn
+      Role: !GetAtt Step11LambdaRole.Arn
       Code:
         ZipFile: !Sub |
           import boto3
@@ -515,13 +515,13 @@ Resources:
       Description: 'Cloudwatch to S3  (SQS worker)'
       Environment:
         Variables:
-          's3_bucket': !Ref 'Step10S3Bucket'
-          'sqs_queueurl': !Ref 'Step6SqsQueue'
+          's3_bucket': !Ref 'Step12S3Bucket'
+          'sqs_queueurl': !Ref 'Step8SqsQueue'
       Tags:
       - Key: CloudformationArn
         Value: !Ref 'AWS::StackId'
         
-  Step10S3Bucket:
+  Step12S3Bucket:
     Type: AWS::S3::Bucket
     DeletionPolicy: Retain
     Properties:
