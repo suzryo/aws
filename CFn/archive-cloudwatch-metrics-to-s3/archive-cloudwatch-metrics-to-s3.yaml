@@ -293,6 +293,7 @@ Resources:
       Targets:
       - Arn: !Ref 'Step8SnsTopic'
         Id: Step8SnsTopic
+
   Step8SnsTopic:
     Type: AWS::SNS::Topic
     Properties:
@@ -300,6 +301,23 @@ Resources:
       Subscription:
       - Endpoint: !GetAtt 'Step9LambdaFunction.Arn'
         Protocol: lambda
+  Step8SnsPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Id: MyTopicPolicy
+        Statement:
+        - Sid: My-statement-id
+          Effect: Allow
+          Principal:
+            Service:
+            - events.amazonaws.com
+          Action:
+          - sns:Publish
+          Resource: !Ref 'Step8SnsTopic'
+      Topics:
+      - !Ref 'Step8SnsTopic'
 
   Step9LambdaPermission:
     Type: AWS::Lambda::Permission
