@@ -260,13 +260,36 @@ Resources:
     Type: AWS::S3::Bucket
     DeletionPolicy: Retain
     Properties:
-      BucketName: !Join ['', [!Ref 'AWS::StackName', '-step5tmp-', !Ref 'AWS::Region', '-',
+      BucketName: !Join ['', [!Ref 'AWS::StackName', '-step5-', !Ref 'AWS::Region', '-',
           !Ref 'AWS::AccountId']]
       LifecycleConfiguration:
         Rules:
         - Id: AutoDelete
           Status: Enabled
           ExpirationInDays: '7'
+      NotificationConfiguration:
+        LambdaConfigurations:
+        - Function: !GetAtt 'Step6LambdaFunction.Arn'
+          Event: s3:ObjectCreated:*
+          Filter:
+            S3Key:
+              Rules:
+              - Name: suffix
+                Value: jsonl
+
+  Step6LambdaLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt 'Step6LambdaFunction.Arn'
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+
+  Step6LogGroupLambda:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Join ['', [/aws/lambda/, !Ref 'Step6LambdaFunction']]
+      RetentionInDays: 14
 
   Step6LambdaRole:
     Type: AWS::IAM::Role
@@ -296,6 +319,10 @@ Resources:
             Action:
             - sns:Publish
             Resource: !Ref 'Step7SnsTopic'
+          - Effect: Allow
+            Action:
+            - s3:GetObject
+            Resource: !Join ['', ['arn:aws:s3:::', !Ref 'AWS::StackName', '-*']]
 
   Step6LambdaFunction:
     Type: AWS::Lambda::Function
@@ -307,25 +334,42 @@ Resources:
           import boto3
           import json
           import os
+          import urllib.parse
 
-          # S3バケット(環境変数より)
-          s3_bucket = os.environ['s3_bucket']
+          s3 = boto3.client('s3')
 
           def lambda_handler(event, context):
-              return
+            bucket_name = event['Records'][0]['s3']['bucket']['name']
+            key = urllib.parse.unquote_plus(event['Records'][0]['s3']['object']['key'], encoding='utf-8')
 
-          def send_to_sns(body,subject):
+            print ('bucket_name: ' + bucket_name)
+            print ('bucket_name: ' + key)
+
+            response = s3.get_object(Bucket=bucket_name, Key=key)
+
+            a = response['Body'].read().decode('utf-8')
+  
+            for b in a.split('\n'):
+                c = json.loads(b)
+                d = {}
+                d["Namespace"] = c['Namespace']
+                d["MetricName"] = c['MetricName']
+                d["Dimensions"] = c['Dimensions']
+                d["startdate"] = json.loads(c['startdate'])
+                body = json.dumps(d)
+                r = send_to_sns(body)
+
+          def send_to_sns(body):
               topic=os.environ['SnsTopicArn']
               sns = boto3.client('sns')
               sns.publish(
                   TopicArn = topic,
-                  Subject = subject,
+                  Subject = 'subject',
                   Message = body
-              )        
-
+              )   
 
       Runtime: python3.6
-      MemorySize: 256
+      MemorySize: 128
       Timeout: 300
       Description: 'Cloudwatch to S3 (S3 events)'
       Environment:
@@ -483,7 +527,7 @@ Resources:
 
             # SQSキュー処理実行
             exe_count = 0
-            while(elapsedtime < 270):
+            while(elapsedtime < 240):
               r = receive_sqs_message(queueurl)
               if ( r < 0 ):
                 break
@@ -492,8 +536,8 @@ Resources:
 
               elapsedtime =   int(time.time()) - function_starttime
 
-            # 4.5分超過時、タイムアウト対策のため別Functionを起動
-            if (elapsedtime >= 270):
+            # 4分超過時、タイムアウト対策のため再帰呼び出し
+            if (elapsedtime >= 240):
               if (exe_count >= 1):
                 invoke_takeover(context.invoked_function_arn)
 
