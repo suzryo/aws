@@ -175,12 +175,12 @@ Resources:
             Resource: !GetAtt 'Step3DynamodbTable.StreamArn'
           - Effect: Allow
             Action:
-            - sns:Publish
-            Resource: !Ref 'Step7SnsTopic'
-          - Effect: Allow
-            Action:
             - CloudWatch:ListMetrics
             Resource: '*'
+          - Effect: Allow
+            Action:
+            - s3:PutObject
+            Resource: !Join ['', [!GetAtt 'Step5S3Bucket.Arn', /*]]
 
   Step4LambdaFunction:
     Type: AWS::Lambda::Function
@@ -190,53 +190,59 @@ Resources:
       Code:
         ZipFile: !Sub |
           import boto3
+          import boto3
           import json
           import os
+          import datetime
+
           cloudwatch = boto3.client('cloudwatch')
+          s3_client = boto3.client('s3')
 
           def lambda_handler(event, context):
 
-            for record in event['Records']:
-              namespace = json.dumps(record['dynamodb']['NewImage']['namespace']['S'])
-              startdate = json.dumps(record['dynamodb']['NewImage']['startdate']['S'])
-              currenttime = json.dumps(record['dynamodb']['NewImage']['currenttime']['S'])
-              
-              for b in list_metrics(namespace):
-                Namespace = b['Namespace']
-                MetricName = b['MetricName']
-                Dimensions = b['Dimensions']
-                body = build_body(Namespace,MetricName,Dimensions,startdate)
-                subject = Namespace
-                send_to_sns(body,subject)
+            for a in event['Records']:
+              b = {}
+              b["namespace"] = json.dumps(a['dynamodb']['NewImage']['namespace']['S'])
+              b["startdate"] = json.dumps(a['dynamodb']['NewImage']['startdate']['S'])
+              b["currenttime"] = json.dumps(a['dynamodb']['NewImage']['currenttime']['S'])
+              list_metrics(b)
 
-          def list_metrics(namespace):
-              a = cloudwatch.list_metrics(Namespace=namespace)
-              b = a['Metrics']
+          def list_metrics(b):
 
-              while(a.get('NextToken') is not None):
-                nexttoken=a['NextToken']
-                a = cloudwatch.list_metrics(Namespace=namespace,NextToken=nexttoken)
-                b.extend(a['Metrics'])
-              
-              return b
-                            
-          def build_body(Namespace,MetricName,Dimensions,startdate):
+            n=1
+            c = cloudwatch.list_metrics(Namespace=b["namespace"])
+            build_json(c,b["startdate"],n)
 
-              d = {}
-              d["Namespace"] = Namespace
-              d["MetricName"] = MetricName
-              d["Dimensions"] = Dimensions
-              d["startdate"] = startdate
-              return json.dumps(d)
-    
-          def send_to_sns(body,subject):
-              topic=os.environ['SnsTopicArn']
-              sns = boto3.client('sns')
-              sns.publish(
-                  TopicArn = topic,
-                  Subject = subject,
-                  Message = body
-              )              
+            while(c.get('NextToken') is not None):
+              n += 1
+              nexttoken=c['NextToken']
+              c = cloudwatch.list_metrics(Namespace=namespace,NextToken=nexttoken)
+              build_json(c,b["startdate"])
+
+          def build_json(c,startdate,n):
+
+            f = []
+            for d in c['Metrics']:
+
+              e = {}
+              e["Namespace"] = d['Namespace']
+              e["MetricName"] = d['MetricName']
+              e["Dimensions"] = d['Dimensions']
+              e["startdate"] = startdate
+
+              f.append(json.dumps(e))
+
+            # S3バケット(環境変数より)
+            s3_bucket = os.environ['s3_bucket']
+            # S3 キー生成
+            s3_key = datetime.datetime.now().strftime('%Y/%m/%d/%H-%M-%S-%f') + '-' + str(n) + '-step6.jsonl'
+
+            # minify形式(JSONL)のJSONファイル(レコード区切りを改行)を出力
+            with open("/tmp/jsonl", "w", encoding="utf-8") as a:
+              a.write("\n".join(f))
+
+            # S3 アップロード
+            s3_client.upload_file('/tmp/jsonl', s3_bucket , s3_key)
 
       Runtime: python3.6
       MemorySize: 256
@@ -244,7 +250,86 @@ Resources:
       Description: 'Cloudwatch to S3 (DynamoDB consumer)'
       Environment:
         Variables:
-          'dynamodbtablename': !Ref 'Step3DynamodbTable'
+          's3_bucket': !Ref 'Step5S3Bucket'
+
+      Tags:
+      - Key: CloudformationArn
+        Value: !Ref 'AWS::StackId'
+
+  Step5S3Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Join ['', [!Ref 'AWS::StackName', '-step5tmp-', !Ref 'AWS::Region', '-',
+          !Ref 'AWS::AccountId']]
+      LifecycleConfiguration:
+        Rules:
+        - Id: AutoDelete
+          Status: Enabled
+          ExpirationInDays: '7'
+
+  Step6LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: '*'
+          - Effect: Allow
+            Action:
+            - sns:Publish
+            Resource: !Ref 'Step7SnsTopic'
+
+  Step6LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt Step6LambdaRole.Arn
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          import json
+          import os
+
+          # S3バケット(環境変数より)
+          s3_bucket = os.environ['s3_bucket']
+
+          def lambda_handler(event, context):
+              return
+
+          def send_to_sns(body,subject):
+              topic=os.environ['SnsTopicArn']
+              sns = boto3.client('sns')
+              sns.publish(
+                  TopicArn = topic,
+                  Subject = subject,
+                  Message = body
+              )        
+
+
+      Runtime: python3.6
+      MemorySize: 256
+      Timeout: 300
+      Description: 'Cloudwatch to S3 (S3 events)'
+      Environment:
+        Variables:
           'SnsTopicArn': !Ref 'Step7SnsTopic'
       Tags:
       - Key: CloudformationArn
