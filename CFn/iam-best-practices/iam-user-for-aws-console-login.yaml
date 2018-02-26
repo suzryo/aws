@@ -118,17 +118,8 @@ Resources:
           - iam:DeleteLoginProfile,
           - iam:GetLoginProfile,
           - iam:ListAccessKeys,
-          - iam:UpdateAccessKey,
-          - iam:UpdateLoginProfile,
           - iam:ListSigningCertificates,
-          - iam:DeleteSigningCertificate,
-          - iam:UpdateSigningCertificate,
-          - iam:UploadSigningCertificate,
           - iam:ListSSHPublicKeys,
-          - iam:GetSSHPublicKey,
-          - iam:DeleteSSHPublicKey,
-          - iam:UpdateSSHPublicKey,
-          - iam:UploadSSHPublicKey,
           - iam:RequestSmsMfaRegistration
           - iam:FinalizeSmsMfaRegistration
           Resource:
@@ -152,6 +143,15 @@ Resources:
         - Effect: Allow
           Action:
           - iam:DeactivateMFADevice
+          - iam:UpdateAccessKey,
+          - iam:UpdateLoginProfile,
+          - iam:DeleteSigningCertificate,
+          - iam:UpdateSigningCertificate,
+          - iam:UploadSigningCertificate,
+          - iam:GetSSHPublicKey,
+          - iam:DeleteSSHPublicKey,
+          - iam:UpdateSSHPublicKey,
+          - iam:UploadSSHPublicKey,
           Resource:
           - !Join ['', ['arn:aws:iam::', !Ref 'AWS::AccountId', ':mfa/${aws:username}']]
           - !Join ['', ['arn:aws:iam::', !Ref 'AWS::AccountId', ':user/${aws:username}']]
