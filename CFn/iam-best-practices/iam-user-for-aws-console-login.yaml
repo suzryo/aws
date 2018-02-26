@@ -1,0 +1,356 @@
+Description: IAM User For AWS console login
+Parameters:
+  NotificationEmailaddress:
+    Description: E-mail address for notification
+    Type: String
+    Default: mail@example.com
+  AllowIPrangeSwitchrole:
+    Description: Allow IP range (switch role)
+    Type: String
+    Default: 0.0.0.0/0
+  IamUserAdmin:
+    Description: Administrator IAM user (Notified when used)
+    Type: String
+    Default: origin-iam-admin
+  SampleIamUserEnable:
+    Description: Whether to create a sample IAM user
+    Type: String
+    Default: 'true'
+    AllowedValues:
+    - 'true'
+    - 'false'
+Conditions:
+  IsSampleIamUser: !Equals [!Ref 'SampleIamUserEnable', 'true']
+Resources:
+  IamUserAdminSample:
+    Type: AWS::IAM::User
+    Condition: IsSampleIamUser
+    Properties:
+      UserName: sample-iam-user-admin
+      Groups:
+      - !Ref 'IamGroupAdmin'
+  IamUserPoweruserSample:
+    Type: AWS::IAM::User
+    Condition: IsSampleIamUser
+    Properties:
+      UserName: sample-iam-user-poweruser
+      Groups:
+      - !Ref 'IamGroupPowerUser'
+  IamUserReadonlySample:
+    Type: AWS::IAM::User
+    Condition: IsSampleIamUser
+    Properties:
+      UserName: sample-iam-user-readonly
+      Groups:
+      - !Ref 'IamGroupReadonly'
+  IamGroupAdmin:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: iam-group-admin
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/ReadOnlyAccess
+      Policies:
+      - PolicyName: PolicieAllowAssumeRoleAdmin
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - sts:AssumeRole
+            Resource:
+            - !GetAtt 'IamRoleAdmin.Arn'
+            - !GetAtt 'IamRolePowerUser.Arn'
+            Condition:
+              Bool:
+                aws:MultiFactorAuthPresent: 'true'
+              IpAddress:
+                aws:SourceIp:
+                - !Ref 'AllowIPrangeSwitchrole'
+  IamGroupPowerUser:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: iam-group-poweruser
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/ReadOnlyAccess
+      Policies:
+      - PolicyName: PolicieAllowAssumeRolePowerUser
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - sts:AssumeRole
+            Resource:
+            - !GetAtt 'IamRolePowerUser.Arn'
+            Condition:
+              Bool:
+                aws:MultiFactorAuthPresent: 'true'
+              IpAddress:
+                aws:SourceIp:
+                - !Ref 'AllowIPrangeSwitchrole'
+  IamGroupReadonly:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: iam-group-readonly
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/ReadOnlyAccess
+  IamPolicyAllowManageSelfcredentials:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: policy-manage-self-credentials
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - iam:ListAccountAliases
+          - iam:ListUsers
+          - iam:GetAccountPasswordPolicy
+          - iam:GetAccountSummary
+          Resource:
+          - !Sub 'arn:aws:iam::${AWS::AccountId}:*'
+        - Effect: Allow
+          Action:
+          - iam:ChangePassword,
+          - iam:CreateAccessKey,
+          - iam:CreateLoginProfile,
+          - iam:DeleteAccessKey,
+          - iam:DeleteLoginProfile,
+          - iam:GetLoginProfile,
+          - iam:ListAccessKeys,
+          - iam:UpdateAccessKey,
+          - iam:UpdateLoginProfile,
+          - iam:ListSigningCertificates,
+          - iam:DeleteSigningCertificate,
+          - iam:UpdateSigningCertificate,
+          - iam:UploadSigningCertificate,
+          - iam:ListSSHPublicKeys,
+          - iam:GetSSHPublicKey,
+          - iam:DeleteSSHPublicKey,
+          - iam:UpdateSSHPublicKey,
+          - iam:UploadSSHPublicKey,
+          - iam:RequestSmsMfaRegistration
+          - iam:FinalizeSmsMfaRegistration
+          Resource:
+          - !Join ['', ['arn:aws:iam::', !Ref 'AWS::AccountId', ':user/${aws:username}']]
+        - Effect: Allow
+          Action:
+          - iam:ListVirtualMFADevices
+          Resource:
+          - !Sub 'arn:aws:iam::${AWS::AccountId}:mfa/*'
+          - !Join ['', ['arn:aws:iam::', !Ref 'AWS::AccountId', ':user/${aws:username}']]
+        - Effect: Allow
+          Action:
+          - iam:CreateVirtualMFADevice
+          - iam:EnableMFADevice
+          - iam:ResyncMFADevice
+          - iam:DeleteVirtualMFADevice
+          Resource:
+          - !Join ['', ['arn:aws:iam::', !Ref 'AWS::AccountId', ':sms-mfa/${aws:username}']]
+          - !Join ['', ['arn:aws:iam::', !Ref 'AWS::AccountId', ':mfa/${aws:username}']]
+          - !Join ['', ['arn:aws:iam::', !Ref 'AWS::AccountId', ':user/${aws:username}']]
+        - Effect: Allow
+          Action:
+          - iam:DeactivateMFADevice
+          Resource:
+          - !Join ['', ['arn:aws:iam::', !Ref 'AWS::AccountId', ':mfa/${aws:username}']]
+          - !Join ['', ['arn:aws:iam::', !Ref 'AWS::AccountId', ':user/${aws:username}']]
+          Condition:
+            Bool:
+              aws:MultiFactorAuthPresent: 'true'
+      Groups:
+      - !Ref 'IamGroupAdmin'
+      - !Ref 'IamGroupPowerUser'
+      - !Ref 'IamGroupReadonly'
+  IamPolicyDenyS3DynamoDB:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: Policy-deny-S3-DynamoDB-access
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Deny
+          Action:
+          - s3:GetObject
+          - DynamoDB:Get*
+          - DynamoDB:Scan
+          - DynamoDB:Query
+          - DynamoDB:BatchGetItem
+          Resource:
+          - '*'
+      Groups:
+      - !Ref 'IamGroupAdmin'
+      - !Ref 'IamGroupPowerUser'
+      - !Ref 'IamGroupReadonly'
+  IamRoleAdmin:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/AdministratorAccess
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+          Action: sts:AssumeRole
+          Condition:
+            Bool:
+              aws:MultiFactorAuthPresent: 'true'
+      Policies:
+      - PolicyName: PolicyIamRoleAdmin
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Deny
+            Action:
+            - CloudTrail:DeleteTrail
+            - CloudTrail:StopLogging
+            Resource:
+            - '*'
+      RoleName: iam-role-admin
+  IamRolePowerUser:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/PowerUserAccess
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+          Action: sts:AssumeRole
+          Condition:
+            Bool:
+              aws:MultiFactorAuthPresent: 'true'
+      Policies:
+      - PolicyName: PolicyIamRolePoweruser
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Deny
+            Action:
+            - CloudTrail:DeleteTrail
+            - CloudTrail:StopLogging
+            - CloudTrail:UpdateTrail
+            Resource:
+            - '*'
+          - Effect: Deny
+            Action:
+            - s3:Delete*
+            - s3:Put*
+            Resource: arn:aws:s3:::cloudtrail-*
+      RoleName: iam-role-poweruser
+  EventRuleAdminswich:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: EventRule
+      EventPattern:
+        detail-type:
+        - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+          - sts.amazonaws.com
+          eventName:
+          - AssumeRole
+          requestParameters:
+            roleArn:
+            - !GetAtt 'IamRoleAdmin.Arn'
+      State: ENABLED
+      Targets:
+      - Arn: !Ref 'SnsTopicAdminNotification'
+        Id: EventRuleAdminswich
+        InputTransformer:
+          InputTemplate: '"Usage of the administrator role (<requestParameters>) by
+            the IAM user (<userIdentity>). eventTime: <eventTime>, sourceIPAddress:
+            <sourceIPAddress>, userAgent: <userAgent>"'
+          InputPathsMap:
+            eventTime: $.detail.eventTime
+            userIdentity: $.detail.userIdentity.arn
+            requestParameters: $.detail.requestParameters.roleArn
+            sourceIPAddress: $.detail.sourceIPAddress
+            userAgent: $.detail.userAgent
+  EventRuleAdminUserLogin:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: EventRule
+      EventPattern:
+        detail-type:
+        - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+          - signin.amazonaws.com
+          eventName:
+          - ConsoleLogin
+          eventType:
+          - AwsConsoleSignIn
+          userIdentity:
+            userName:
+            - !Ref 'IamUserAdmin'
+      State: ENABLED
+      Targets:
+      - Arn: !Ref 'SnsTopicAdminNotification'
+        Id: EventRuleAdminUserLogin
+        InputTransformer:
+          InputTemplate: '"Administrator IAM user login has occurred. (<userIdentity>).
+            eventTime: <eventTime>, sourceIPAddress: <sourceIPAddress>, userAgent:
+            <userAgent>"'
+          InputPathsMap:
+            eventTime: $.detail.eventTime
+            userIdentity: $.detail.userIdentity.arn
+            sourceIPAddress: $.detail.sourceIPAddress
+            userAgent: $.detail.userAgent
+  EventRuleRootLogin:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: EventRule
+      EventPattern:
+        detail-type:
+        - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+          - signin.amazonaws.com
+          eventName:
+          - ConsoleLogin
+          eventType:
+          - AwsConsoleSignIn
+          userIdentity:
+            type:
+            - Root
+      State: ENABLED
+      Targets:
+      - Arn: !Ref 'SnsTopicAdminNotification'
+        Id: EventRuleRootLogin
+        InputTransformer:
+          InputTemplate: '"Root login has occurred. (<userIdentity>). eventTime: <eventTime>,
+            sourceIPAddress: <sourceIPAddress>, userAgent: <userAgent>"'
+          InputPathsMap:
+            eventTime: $.detail.eventTime
+            userIdentity: $.detail.userIdentity.arn
+            sourceIPAddress: $.detail.sourceIPAddress
+            userAgent: $.detail.userAgent
+  SnsTopicAdminNotification:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: !Sub 'AWS-AdminRole-Notification (${AWS::AccountId})'
+      Subscription:
+      - Endpoint: !Ref 'NotificationEmailaddress'
+        Protocol: email
+  SnsTopicAdminNotificationPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Id: SnsTopicAdminNotificationPolicy
+        Statement:
+        - Sid: SnsTopicAdminNotificationPolicy
+          Effect: Allow
+          Principal:
+            Service:
+            - events.amazonaws.com
+          Action:
+          - sns:Publish
+          Resource: !Ref 'SnsTopicAdminNotification'
+      Topics:
+      - !Ref 'SnsTopicAdminNotification'
