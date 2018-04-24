@@ -19,6 +19,44 @@ Resources:
                 Rules:
                   - Name: suffix
                     Value: gz
+  Step1S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref 'Step1S3Bucket'
+      PolicyDocument:
+        Id: ElblogsBucketPolicy
+        Statement:
+          - Sid: AddPerm
+            Effect: Allow
+            Principal:
+              AWS:
+                - arn:aws:iam::582318560864:root
+                - arn:aws:iam::127311923021:root
+                - arn:aws:iam::033677994240:root
+                - arn:aws:iam::027434742980:root
+                - arn:aws:iam::797873946194:root
+                - arn:aws:iam::985666609251:root
+                - arn:aws:iam::054676820928:root
+                - arn:aws:iam::156460612806:root
+                - arn:aws:iam::652711504416:root
+                - arn:aws:iam::156460612806:root
+                - arn:aws:iam::009996457667:root
+                - arn:aws:iam::600734575887:root
+                - arn:aws:iam::383597477331:root
+                - arn:aws:iam::114774131450:root
+                - arn:aws:iam::797873946194:root
+                - arn:aws:iam::783225319266:root
+                - arn:aws:iam::718504428378:root
+                - arn:aws:iam::507241528517:root
+            Action:
+              - s3:PutObject
+            Resource:
+              - !Join
+                - ''
+                - - 'arn:aws:s3:::'
+                  - !Ref 'Step1S3Bucket'
+                  - /*
+
   Step2LambdaLambdaPermission:
     Type: AWS::Lambda::Permission
     Properties:
@@ -89,8 +127,8 @@ Resources:
           def lambda_handler(event, context):
             bucket_name = event['Records'][0]['s3']['bucket']['name']
             key = urllib.parse.unquote_plus(event['Records'][0]['s3']['object']['key'], encoding='utf-8')
-            print ('bucket_name: ' + bucket_name)
-            print ('key: ' + key)
+            #print ('bucket_name: ' + bucket_name)
+            #print ('key: ' + key)
             response =s3.get_object(Bucket=bucket_name, Key=key)
             body = gzip.decompress(response['Body'].read()).decode('utf-8').splitlines()
             process_log(body)
@@ -162,14 +200,16 @@ Resources:
                   z["request.method"] = z["request"].split(' ')[0]
                   z["request.uri"] = z["request"].split(' ')[1]
                   z["request.http_version"] = z["request"].split(' ')[2]
-                  e = urllib.parse.urlparse(z["request.uri"])
-                  z["request.uri.scheme"] = e.scheme
-                  z["request.uri.user"] = e.username
-                  z["request.uri.host"] = e.hostname
-                  z["request.uri.port"] = e.port
-                  z["request.uri.path"] = e.path
-                  z["request.uri.query"] = e.query
-                  z["request.uri.fragment"] = e.fragment
+
+                  if z["request.method"] != '-' :
+                    e = urllib.parse.urlparse(z["request.uri"])
+                    z["request.uri.scheme"] = e.scheme
+                    z["request.uri.user"] = e.username
+                    z["request.uri.host"] = e.hostname
+                    z["request.uri.port"] = e.port
+                    z["request.uri.path"] = e.path
+                    z["request.uri.query"] = e.query
+                    z["request.uri.fragment"] = e.fragment
 
             #print(z)
             return json.dumps(z) + "\n"
@@ -181,7 +221,7 @@ Resources:
               Records = data
             )
 
-            print(str(r["ResponseMetadata"]["HTTPHeaders"]))
+            #print(str(r["ResponseMetadata"]["HTTPHeaders"]))
 
       Runtime: python3.6
       MemorySize: 128
@@ -202,9 +242,9 @@ Resources:
       ExtendedS3DestinationConfiguration:
         BucketARN: !Sub 'arn:aws:s3:::${Step4S3bucket}'
         BufferingHints:
-          IntervalInSeconds: '60'
-          SizeInMBs: '50'
-        CompressionFormat: UNCOMPRESSED
+          IntervalInSeconds: '600'
+          SizeInMBs: '100'
+        CompressionFormat: GZIP
         Prefix: firehose/
         RoleARN: !GetAtt 'Step3deliveryRole.Arn'
         ProcessingConfiguration:
@@ -243,6 +283,13 @@ Resources:
               - !Sub 'arn:aws:s3:::${Step4S3bucket}*'
       Roles:
         - !Ref 'Step3deliveryRole'
+  Step3LogGroupLambda:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/firehose/${Step3deliverystream}'
+      LogStreamName: !Ref 'Step3deliverystream'
+      RetentionInDays: 7
+
   Step4S3bucket:
     Type: AWS::S3::Bucket
     DeletionPolicy: Delete
