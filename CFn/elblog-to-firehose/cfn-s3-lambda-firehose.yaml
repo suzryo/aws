@@ -199,19 +199,19 @@ Resources:
                 z["target"] = b[4].split(':')[0]
 
                 if len(z["request"].split(' ')) > 2:
-                  z["request.method"] = z["request"].split(' ')[0]
-                  z["request.uri"] = z["request"].split(' ')[1]
-                  z["request.http_version"] = z["request"].split(' ')[2]
+                  z["request_method"] = z["request"].split(' ')[0]
+                  z["request_uri"] = z["request"].split(' ')[1]
+                  z["request_http_version"] = z["request"].split(' ')[2]
 
-                  if z["request.method"] != '-' :
-                    e = urllib.parse.urlparse(z["request.uri"])
-                    z["request.uri.scheme"] = e.scheme
-                    z["request.uri.user"] = e.username
-                    z["request.uri.host"] = e.hostname
-                    z["request.uri.port"] = e.port
-                    z["request.uri.path"] = e.path
-                    z["request.uri.query"] = e.query
-                    z["request.uri.fragment"] = e.fragment
+                  if z["request_method"] != '-' :
+                    e = urllib.parse.urlparse(z["request_uri"])
+                    z["request_uri_scheme"] = e.scheme
+                    z["request_uri_user"] = e.username
+                    z["request_uri_host"] = e.hostname
+                    z["request_uri_port"] = e.port
+                    z["request_uri_path"] = e.path
+                    z["request_uri_query"] = e.query
+                    z["request_uri_fragment"] = e.fragment
 
             #print(z)
             return json.dumps(z) + "\n"
