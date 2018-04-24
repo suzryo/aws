@@ -19,6 +19,8 @@ Resources:
                 Rules:
                   - Name: suffix
                     Value: gz
+      VersioningConfiguration:
+        Status: Enabled
   Step1S3BucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
