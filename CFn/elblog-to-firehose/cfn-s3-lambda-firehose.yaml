@@ -11,16 +11,17 @@ Resources:
             Status: Enabled
             ExpirationInDays: '7'
       NotificationConfiguration:
-        LambdaConfigurations:
-          - Function: !GetAtt 'Step2LambdaFunction.Arn'
-            Event: s3:ObjectCreated:*
+        TopicConfigurations:
+          - Event: s3:ObjectCreated:*
             Filter:
               S3Key:
                 Rules:
                   - Name: suffix
                     Value: gz
+            Topic: !Ref 'Step2SnsTopic'
       VersioningConfiguration:
         Status: Enabled
+
   Step1S3BucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
@@ -59,19 +60,47 @@ Resources:
                   - !Ref 'Step1S3Bucket'
                   - /*
 
-  Step2LambdaLambdaPermission:
+  Step2SnsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Id: MyTopicPolicy
+        Statement:
+        - Sid: My-statement-id
+          Effect: Allow
+          Principal:
+            Service:
+            - s3.amazonaws.com
+          Action:
+          - sns:Publish
+          Resource: !Ref 'Step2SnsTopic'
+      Topics:
+      - !Ref 'Step2SnsTopic'
+
+  Step2SnsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: trigger-consumer
+      Subscription:
+      - Endpoint: !GetAtt 'Step3LambdaFunction.Arn'
+        Protocol: lambda
+
+  Step3LambdaLambdaPermission:
     Type: AWS::Lambda::Permission
     Properties:
-      FunctionName: !GetAtt 'Step2LambdaFunction.Arn'
+      FunctionName: !Ref 'Step3LambdaFunction'
       Action: lambda:InvokeFunction
-      Principal: s3.amazonaws.com
-      SourceAccount: !Ref 'AWS::AccountId'
-  Step2LogGroupLambda:
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref 'Step2SnsTopic'
+
+  Step3LogGroupLambda:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${Step2LambdaFunction}'
+      LogGroupName: !Sub '/aws/lambda/${Step3LambdaFunction}'
       RetentionInDays: 14
-  Step2LambdaRole:
+
+  Step3LambdaRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
@@ -108,11 +137,11 @@ Resources:
                   - firehose:PutRecordBatch
                 Resource: !GetAtt 'Step3deliverystream.Arn'
 
-  Step2LambdaFunction:
+  Step3LambdaFunction:
     Type: AWS::Lambda::Function
     Properties:
       Handler: index.lambda_handler
-      Role: !GetAtt 'Step2LambdaRole.Arn'
+      Role: !GetAtt 'Step3LambdaRole.Arn'
       Code:
         ZipFile: !Sub |
           import boto3
@@ -122,13 +151,16 @@ Resources:
           import gzip
           from datetime import datetime
           import base64
+          import re
 
           s3 = boto3.client('s3')
           firehose = boto3.client('firehose')
 
           def lambda_handler(event, context):
-            bucket_name = event['Records'][0]['s3']['bucket']['name']
-            key = urllib.parse.unquote_plus(event['Records'][0]['s3']['object']['key'], encoding='utf-8')
+            #event2 is sns message
+            event2 = json.loads(event['Records'][0]['Sns']['Message'])
+            bucket_name = event2['Records'][0]['s3']['bucket']['name']
+            key = urllib.parse.unquote_plus(event2['Records'][0]['s3']['object']['key'], encoding='utf-8')
             #print ('bucket_name: ' + bucket_name)
             #print ('key: ' + key)
             response =s3.get_object(Bucket=bucket_name, Key=key)
@@ -140,8 +172,9 @@ Resources:
             c = []
             for a in data:
               b = parse_log(a)
-              c.append({'Data': b})
-              i = i + 1
+              if b is not None:
+                c.append({'Data': b})
+                i = i + 1
               if i == 100:
                 PutRecordBatchFirehose(c)
                 i = 0
@@ -213,8 +246,11 @@ Resources:
                     z["request_uri_query"] = e.query
                     z["request_uri_fragment"] = e.fragment
 
-            #print(z)
-            return json.dumps(z) + "\n"
+            #Column check (number, timestamp format)
+            if len(z) > 4:
+              if (re.match('[0-9]...-[0-9].-[0-9].T[0-9].:[0-9].:[0-9].\.[[0-9]*Z' , z["timestamp"])):
+                #print(z)
+                return json.dumps(z) + "\n"
 
           def PutRecordBatchFirehose(data):
             firehose_stream_name = os.environ['firehose_stream_name']
@@ -223,7 +259,7 @@ Resources:
               Records = data
             )
 
-            #print(str(r["ResponseMetadata"]["HTTPHeaders"]))
+            print(str(r["ResponseMetadata"]["HTTPHeaders"]))
 
       Runtime: python3.6
       MemorySize: 128
@@ -244,7 +280,7 @@ Resources:
       ExtendedS3DestinationConfiguration:
         BucketARN: !Sub 'arn:aws:s3:::${Step4S3bucket}'
         BufferingHints:
-          IntervalInSeconds: '600'
+          IntervalInSeconds: '60'
           SizeInMBs: '100'
         CompressionFormat: GZIP
         Prefix: firehose/
@@ -266,6 +302,7 @@ Resources:
             Condition:
               StringEquals:
                 sts:ExternalId: !Ref 'AWS::AccountId'
+
   Step3deliveryPolicy:
     Type: AWS::IAM::Policy
     Properties:
@@ -286,6 +323,7 @@ Resources:
               - !Sub 'arn:aws:s3:::${Step4S3bucket}*'
       Roles:
         - !Ref 'Step3deliveryRole'
+
   Step3LogGroupFirehose:
     Type: AWS::Logs::LogGroup
     Properties:
