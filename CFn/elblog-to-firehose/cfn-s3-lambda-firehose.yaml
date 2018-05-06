@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: alblog to firehose test 20180423
+Description: alblog to firehose test 20180506
 Resources:
   Step1S3Bucket:
     Type: AWS::S3::Bucket
@@ -81,7 +81,7 @@ Resources:
   Step2SnsTopic:
     Type: AWS::SNS::Topic
     Properties:
-      DisplayName: trigger-consumer
+      DisplayName: trigger-elb-log-parse
       Subscription:
       - Endpoint: !GetAtt 'Step3LambdaFunction.Arn'
         Protocol: lambda
@@ -280,8 +280,8 @@ Resources:
       ExtendedS3DestinationConfiguration:
         BucketARN: !Sub 'arn:aws:s3:::${Step4S3bucket}'
         BufferingHints:
-          IntervalInSeconds: '60'
-          SizeInMBs: '100'
+          IntervalInSeconds: '300'
+          SizeInMBs: '10'
         CompressionFormat: GZIP
         Prefix: firehose/
         RoleARN: !GetAtt 'Step3deliveryRole.Arn'
@@ -339,3 +339,213 @@ Resources:
           - Id: AutoDelete
             Status: Enabled
             ExpirationInDays: '40'
+      NotificationConfiguration:
+        TopicConfigurations:
+          - Event: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: gz
+            Topic: !Ref 'Step5SnsTopic'
+
+  Step5SnsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Id: MyTopicPolicy
+        Statement:
+        - Sid: My-statement-id
+          Effect: Allow
+          Principal:
+            Service:
+            - s3.amazonaws.com
+          Action:
+          - sns:Publish
+          Resource: !Ref 'Step5SnsTopic'
+      Topics:
+      - !Ref 'Step5SnsTopic'
+
+  Step5SnsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: trigger-firehose-output-parse
+
+  Step6LambdaLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref 'Step6LambdaFunction'
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref 'Step5SnsTopic'
+
+  Step6LogGroupLambda:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${Step6LambdaFunction}'
+      RetentionInDays: 14
+
+  Step6LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub 'arn:aws:s3:::${AWS::StackName}-*'
+              - Effect: Allow
+                Action:
+                  - CloudWatch:PutMetricData
+                Resource: '*'
+
+  Step6LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt 'Step6LambdaRole.Arn'
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          import json
+          import os
+          import urllib.parse
+          import gzip
+          from datetime import datetime
+          import base64
+          import re
+
+          s3 = boto3.client('s3')
+          cloudwatch = boto3.client('cloudwatch')
+
+          def lambda_handler(event, context):
+            #event2 is sns message
+            event2 = json.loads(event['Records'][0]['Sns']['Message'])
+            bucket_name = event2['Records'][0]['s3']['bucket']['name']
+            key = urllib.parse.unquote_plus(event2['Records'][0]['s3']['object']['key'], encoding='utf-8')
+            #bucket_name = 'a8-step4s3bucket-1c9do7ktxfccc'
+            #key = 'firehose/2018/05/06/10/a8-Step3deliverystream-BKLUDM255VCW-3-2018-05-06-10-49-00-16e17fad-f2ff-44ce-b1be-e0cfc3576c6a.gz'
+            
+            #print ('bucket_name: ' + bucket_name)
+            #print ('key: ' + key)
+            response =s3.get_object(Bucket=bucket_name, Key=key)
+            body = gzip.decompress(response['Body'].read()).decode('utf-8').splitlines()
+            
+            hosts = GetUniqRequestUriHost(body)
+
+            for host in hosts:
+              print ('host: '+ host)
+              r = AggregateGroupbyRequestUriHost(body,host)
+
+              #print(str(r))
+              PutMetricData(r)
+
+
+          def GetUniqRequestUriHost(data):
+            d = []
+            for a in data:
+              b = json.loads(a)
+              c = b['request_uri_host']
+              if c not in d:
+                d.append(c)
+            return(d)
+
+          def AggregateGroupbyRequestUriHost(data,host):
+
+            total_received_bytes = 0
+            total_sent_bytes = 0
+            total_counts = 0
+            z = {}
+
+            for a in data:
+              b = json.loads(a)
+              if b['request_uri_host'] == host:
+                total_received_bytes = total_received_bytes + b['received_bytes']
+                total_sent_bytes = total_sent_bytes + b['sent_bytes']
+                last_timestamp = b['timestamp']
+                total_counts = total_counts + 1
+
+            if total_counts > 0:
+              z["total_received_bytes"] = total_received_bytes
+              z["total_sent_bytes"] = total_sent_bytes
+              z["total_counts"] = total_counts
+              z["last_timestamp"] = datetime.strptime(last_timestamp, '%Y-%m-%dT%H:%M:%S.%fZ').replace(second=0, microsecond=0)
+              z["request_uri_host"] = host
+
+            return(z)
+
+          def PutMetricData(data):
+
+            last_timestamp =  data["last_timestamp"]
+            request_uri_host = data["request_uri_host"]
+            sample_count = data["total_counts"]
+            total_sent_bytes = data["total_sent_bytes"]
+            total_received_bytes = data["total_received_bytes"]
+            
+            CfnStackName = os.environ['CfnStackName']
+
+            r = cloudwatch.put_metric_data(
+              Namespace= 'ALB_LOG' ,
+              MetricData=[
+                {
+                  'MetricName': 'sent_bytes',
+                  'Dimensions':  [{'Name': 'request_uri_host','Value': request_uri_host}, {'Name': 'StackName','Value': CfnStackName}],
+                  'Timestamp': last_timestamp,
+                  'StatisticValues': {
+                    'SampleCount': sample_count,
+                    'Sum': total_sent_bytes,
+                    'Minimum': total_sent_bytes,
+                    'Maximum': total_sent_bytes,
+                  },
+                  'Unit': "Bytes"
+                },
+                {
+                  'MetricName': 'received_bytes',
+                  'Dimensions':  [{'Name': 'request_uri_host','Value': request_uri_host}, {'Name': 'StackName','Value': CfnStackName}],
+                  'Timestamp': last_timestamp,
+                  'StatisticValues': {
+                    'SampleCount': sample_count,
+                    'Sum': total_received_bytes,
+                    'Minimum': total_received_bytes,
+                    'Maximum': total_received_bytes,
+                  },
+                  'Unit': "Bytes"
+                }
+              ]
+            )
+        
+      Runtime: python3.6
+      MemorySize: 256
+      Timeout: 300
+      Description: ALB log (firehose output) to cloudwatch
+      Environment:
+        Variables:
+          CfnStackName: !Sub '${AWS::StackName}'
+      Tags:
+        - Key: CloudformationArn
+          Value: !Ref 'AWS::StackId'
+
