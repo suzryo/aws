@@ -54,11 +54,7 @@ Resources:
             Action:
               - s3:PutObject
             Resource:
-              - !Join
-                - ''
-                - - 'arn:aws:s3:::'
-                  - !Ref 'Step1S3Bucket'
-                  - /*
+              - !Sub 'arn:aws:s3:::${Step1S3Bucket}/*'
 
   Step2SnsTopicPolicy:
     Type: AWS::SNS::TopicPolicy
@@ -67,24 +63,24 @@ Resources:
         Version: '2012-10-17'
         Id: MyTopicPolicy
         Statement:
-        - Sid: My-statement-id
-          Effect: Allow
-          Principal:
-            Service:
-            - s3.amazonaws.com
-          Action:
-          - sns:Publish
-          Resource: !Ref 'Step2SnsTopic'
+          - Sid: My-statement-id
+            Effect: Allow
+            Principal:
+              Service:
+                - s3.amazonaws.com
+            Action:
+              - sns:Publish
+            Resource: !Ref 'Step2SnsTopic'
       Topics:
-      - !Ref 'Step2SnsTopic'
+        - !Ref 'Step2SnsTopic'
 
   Step2SnsTopic:
     Type: AWS::SNS::Topic
     Properties:
       DisplayName: trigger-elb-log-parse
       Subscription:
-      - Endpoint: !GetAtt 'Step3LambdaFunction.Arn'
-        Protocol: lambda
+        - Endpoint: !GetAtt 'Step3LambdaFunction.Arn'
+          Protocol: lambda
 
   Step3LambdaLambdaPermission:
     Type: AWS::Lambda::Permission
@@ -370,7 +366,12 @@ Resources:
   Step5SnsTopic:
     Type: AWS::SNS::Topic
     Properties:
-      DisplayName: trigger-firehose-output-parse
+      DisplayName: trigger-firehose-s3-output
+      Subscription:
+      - Endpoint: !GetAtt 'Step6LambdaFunction.Arn'
+        Protocol: lambda
+      - Endpoint: !GetAtt 'Step7LambdaFunction.Arn'
+        Protocol: lambda
 
   Step6LambdaLambdaPermission:
     Type: AWS::Lambda::Permission
@@ -443,13 +444,9 @@ Resources:
           cloudwatch = boto3.client('cloudwatch')
 
           def lambda_handler(event, context):
-            #event2 is sns message
-            event2 = json.loads(event['Records'][0]['Sns']['Message'])
-            bucket_name = event2['Records'][0]['s3']['bucket']['name']
-            key = urllib.parse.unquote_plus(event2['Records'][0]['s3']['object']['key'], encoding='utf-8')
-            #bucket_name = 'a8-step4s3bucket-1c9do7ktxfccc'
-            #key = 'firehose/2018/05/06/10/a8-Step3deliverystream-BKLUDM255VCW-3-2018-05-06-10-49-00-16e17fad-f2ff-44ce-b1be-e0cfc3576c6a.gz'
-            
+            z = parse_s3_event(event)
+            bucket_name = z['bucket_name']
+            key = z['key']            
             #print ('bucket_name: ' + bucket_name)
             #print ('key: ' + key)
             response =s3.get_object(Bucket=bucket_name, Key=key)
@@ -464,6 +461,12 @@ Resources:
               #print(str(r))
               PutMetricData(r)
 
+          def parse_s3_event(event):
+            a = json.loads(event['Records'][0]['Sns']['Message'])
+            z = {}
+            z['bucket_name'] = a['Records'][0]['s3']['bucket']['name']
+            z['key'] = urllib.parse.unquote_plus(a['Records'][0]['s3']['object']['key'], encoding='utf-8')
+            return z
 
           def GetUniqRequestUriHost(data):
             d = []
@@ -493,7 +496,7 @@ Resources:
               z["total_received_bytes"] = total_received_bytes
               z["total_sent_bytes"] = total_sent_bytes
               z["total_counts"] = total_counts
-              z["last_timestamp"] = datetime.strptime(last_timestamp, '%Y-%m-%dT%H:%M:%S.%fZ').replace(second=0, microsecond=0)
+              z["last_timestamp"] = datetime.strptime(last_timestamp, '%Y-%m-%dT%H:%M:%S.%fZ').replace(microsecond=0)
               z["request_uri_host"] = host
 
             return(z)
@@ -548,4 +551,134 @@ Resources:
       Tags:
         - Key: CloudformationArn
           Value: !Ref 'AWS::StackId'
+
+  Step7LambdaLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref 'Step7LambdaFunction'
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref 'Step5SnsTopic'
+
+  Step7LogGroupLambda:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${Step7LambdaFunction}'
+      RetentionInDays: 14
+
+  Step7LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub 'arn:aws:s3:::${AWS::StackName}-*'
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub 'arn:aws:s3:::${AWS::StackName}-*'
+              - Effect: Allow
+                Action:
+                  - CloudWatch:PutMetricData
+                Resource: '*'
+
+  Step7LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt 'Step7LambdaRole.Arn'
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          import json
+          import os
+          import urllib.parse
+
+          def lambda_handler(event, context):
+            z = parse_s3_event(event)
+            bucket_name = z['bucket_name']
+            key = z['key']
+            new_key = get_key_with_partition(key)
+            new_bucket = os.environ['s3_bucket']
+
+            s3 = boto3.client('s3')
+            r = s3.copy_object(Bucket=new_bucket, Key=new_key, CopySource={'Bucket': bucket_name, 'Key': key})
+  
+          def parse_s3_event(event):
+            a = json.loads(event['Records'][0]['Sns']['Message'])
+            z = {}
+            z['bucket_name'] = a['Records'][0]['s3']['bucket']['name']
+            z['key'] = urllib.parse.unquote_plus(a['Records'][0]['s3']['object']['key'], encoding='utf-8')
+            return z
+  
+          def get_key_with_partition(key):
+            a = key.split('/')
+            a.reverse()
+            z = {}
+            z['filename'] = a[0]
+            z['hour'] = a[1]
+            z['day'] = a[2]
+            z['month'] = a[3]
+            z['year'] = a[4]
+
+            z['prefix'] = get_key_prefix(key)
+
+            f = z['prefix'] + '/' + 'dt=' + z['year'] + '-' + z['month'] + '-' + z['day'] + '-' + z['hour'] + '/' + z['filename']
+            return f
+
+          def get_key_prefix(key):
+            a = key.split('/')
+            b = len(a) - 5
+            d = []
+            for c in a[:b]:
+              d.append(c)
+            e = '/'.join(d)
+            return e
+
+      Runtime: python3.6
+      MemorySize: 128
+      Timeout: 300
+      Description: Copy the S3 file output by Firehose for Athena
+      Environment:
+        Variables:
+          CfnStackName: !Sub '${AWS::StackName}'
+          s3_bucket: !Ref 'Step8S3bucket'
+      Tags:
+        - Key: CloudformationArn
+          Value: !Ref 'AWS::StackId'
+
+  Step8S3bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - Id: AutoDelete
+            Status: Enabled
+            ExpirationInDays: '100'
 
