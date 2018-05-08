@@ -235,8 +235,13 @@ Resources:
                   z["request_method"] = z["request"].split(' ')[0]
                   z["request_uri"] = z["request"].split(' ')[1]
                   z["request_http_version"] = z["request"].split(' ')[2]
-
                   if z["request_method"] != '-' :
+                    z["request_uri_scheme"] = z["request_uri"].split(':')[0]
+                    z["request_uri_user"] = ''
+                    z["request_uri_host"] = z["request_uri"].split('/')[2].split(':')[0]
+                    z["request_uri_port"] = z["request_uri"].split(':')[2].split('-')[0]
+                    z["request_uri_path"] = ''
+                  else:
                     e = urllib.parse.urlparse(z["request_uri"])
                     z["request_uri_scheme"] = e.scheme
                     z["request_uri_user"] = e.username
@@ -245,15 +250,14 @@ Resources:
                     z["request_uri_path"] = e.path
                     z["request_uri_query"] = e.query
                     z["request_uri_fragment"] = e.fragment
-                  else:
-                    z["request_uri_scheme"] = z["request_uri"].split(':')[0]
-                    z["request_uri_user"] = ''
-                    z["request_uri_host"] = z["request_uri"].split('/')[2].split(':')[0]
-                    z["request_uri_port"] = z["request_uri"].split(':')[2].split('-')[0]
-                    z["request_uri_path"] = ''
+                else:
+                  z["request_uri_scheme"] = ''
+                  z["request_uri_host"] = ''
+                  z["request_uri_path"] = ''
+
 
             #Column check (number, timestamp format)
-            if len(z) > 4:
+            if len(z) > 30:
               if (re.match('[0-9]...-[0-9].-[0-9].T[0-9].:[0-9].:[0-9].\.[[0-9]*Z' , z["timestamp"])):
                 #print(z)
                 return json.dumps(z) + "\n"
@@ -344,7 +348,7 @@ Resources:
         Rules:
           - Id: AutoDelete
             Status: Enabled
-            ExpirationInDays: '40'
+            ExpirationInDays: '3'
       NotificationConfiguration:
         TopicConfigurations:
           - Event: s3:ObjectCreated:*
@@ -353,6 +357,8 @@ Resources:
                 Rules:
                   - Name: suffix
                     Value: gz
+                  - Name: prefix
+                    Value: firehose/alb_logs
             Topic: !Ref 'Step5SnsTopic'
 
   Step5SnsTopicPolicy:
@@ -467,7 +473,7 @@ Resources:
   
             a = sort_log(body) 
             b = aggregate_log_by_group(a)
-            c = put_cloudwatch(b)
+            r = put_cloudwatch(b)
             
           def parse_s3_event(event):
             a = json.loads(event['Records'][0]['Sns']['Message'])
@@ -482,8 +488,8 @@ Resources:
             for a in data:
               b = json.loads(a)
               c = {}
-              if b['request_uri_host'] is not None:
-                if b['request_uri_host'] is not None:
+              if 'request_uri_host' in b.keys():
+                if 'timestamp' in b.keys():
                   c["request_uri_host"] = b['request_uri_host']
                   c["timestamp_min"] = datetime.strptime(b['timestamp'], '%Y-%m-%dT%H:%M:%S.%fZ').replace(second=0, microsecond=0)
                   c["timestamp"] = b['timestamp']
