@@ -1,0 +1,234 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: s3(firehose) analyse to cloudwatch
+Resources:
+
+  Step1SnsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Id: MyTopicPolicy
+        Statement:
+        - Sid: allow-publish-s3
+          Effect: Allow
+          Principal:
+            Service:
+            - s3.amazonaws.com
+          Action:
+          - sns:Publish
+          Resource: !Ref 'Step1SnsTopic'
+      Topics:
+      - !Ref 'Step1SnsTopic'
+
+  Step1SnsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: s3-trigger-firehose-output
+      Subscription:
+      - Endpoint: !GetAtt 'Step2LambdaFunction.Arn'
+        Protocol: lambda
+
+  Step2LambdaLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref 'Step2LambdaFunction'
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref 'Step1SnsTopic'
+
+  Step2LogGroupLambda:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${Step2LambdaFunction}'
+      RetentionInDays: 14
+
+  Step2LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub 'arn:aws:s3:::${AWS::StackName}-*'
+              - Effect: Allow
+                Action:
+                  - CloudWatch:PutMetricData
+                Resource: '*'
+
+  Step2LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt 'Step2LambdaRole.Arn'
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          import json
+          import os
+          import urllib.parse
+          import gzip
+          from datetime import datetime
+          import base64
+          import re
+          from itertools import groupby
+          from operator import itemgetter
+
+          s3 = boto3.client('s3')
+          cloudwatch = boto3.client('cloudwatch')
+
+          def lambda_handler(event, context):
+            z = parse_s3_event(event)
+            bucket_name = z['bucket_name']
+            key = z['key']
+
+            print ('bucket_name: ' + bucket_name)
+            print ('key: ' + key)
+            response =s3.get_object(Bucket=bucket_name, Key=key)
+            body = gzip.decompress(response['Body'].read()).decode('utf-8').splitlines()
+  
+            a = sort_log(body) 
+            b = aggregate_log_by_group(a)
+            r = put_cloudwatch(b)
+            
+          def parse_s3_event(event):
+            a = json.loads(event['Records'][0]['Sns']['Message'])
+            z = {}
+            z['bucket_name'] = a['Records'][0]['s3']['bucket']['name']
+            z['key'] = urllib.parse.unquote_plus(a['Records'][0]['s3']['object']['key'], encoding='utf-8')
+            return z
+
+          def sort_log(data):
+
+            d = []
+            for a in data:
+              b = json.loads(a)
+              c = {}
+              if 'request_uri_host' in b.keys():
+                if 'timestamp' in b.keys():
+                  c["request_uri_host"] = b['request_uri_host']
+                  c["timestamp_min"] = datetime.strptime(b['timestamp'], '%Y-%m-%dT%H:%M:%S.%fZ').replace(second=0, microsecond=0)
+                  c["timestamp"] = b['timestamp']
+                  c["received_bytes"] = b['received_bytes']
+                  c["sent_bytes"] = b['sent_bytes']
+                  d.append(c)
+
+            e = sorted(d, key=itemgetter('request_uri_host','timestamp_min','timestamp'))
+            return e
+
+          def aggregate_log_by_group(data):
+
+            a = data
+            j = []
+
+            for b in groupby(a, key=itemgetter('request_uri_host','timestamp_min')):
+
+              d = []
+              e = []
+
+              for c in b[1]:
+                d.append(c['received_bytes'])
+                e.append(c['sent_bytes'])
+                f = c['timestamp']
+                g = c['request_uri_host']
+
+              h = {}
+              h['received_bytes_sum'] = sum(d)
+              h['received_bytes_min'] = min(d)
+              h['received_bytes_max'] = max(d)
+              h['sent_bytes_sum'] = sum(e)
+              h['sent_bytes_min'] = min(e)
+              h['sent_bytes_max'] = max(e)
+              h['timestamp'] = datetime.strptime(f, '%Y-%m-%dT%H:%M:%S.%fZ').replace(microsecond=0)
+              h['logcount'] = len(d)
+              h['request_uri_host'] = g
+    
+              i = gen_metricdata_list(h)
+              j.extend(i)
+    
+            return j
+
+          def gen_metricdata_list(a):
+
+            CfnStackName = os.environ['CfnStackName']
+    
+            b = {
+                  'MetricName': 'sent_bytes',
+                  'Dimensions':  [{'Name': 'request_uri_host','Value': a['request_uri_host']}, {'Name': 'StackName','Value': CfnStackName}],
+                  'Timestamp': a['timestamp'],
+                  'StatisticValues': {
+                    'SampleCount': a['logcount'],
+                    'Sum': a['sent_bytes_sum'],
+                    'Minimum': a['sent_bytes_min'],
+                    'Maximum': a['sent_bytes_max'],
+                  },
+                  'Unit': "Bytes"
+            }
+
+            c = {
+                  'MetricName': 'received_bytes',
+                  'Dimensions':  [{'Name': 'request_uri_host','Value': a['request_uri_host']}, {'Name': 'StackName','Value': CfnStackName}],
+                  'Timestamp': a['timestamp'],
+                  'StatisticValues': {
+                    'SampleCount': a['logcount'],
+                    'Sum': a['received_bytes_sum'],
+                    'Minimum': a['received_bytes_min'],
+                    'Maximum': a['received_bytes_max'],
+                  },
+                  'Unit': "Bytes"
+            }
+  
+            return [b,c]
+
+          def put_cloudwatch(data):
+            b = []
+            for a in data:
+              b.append(a)
+              if len(b) > 10:
+                c = put_cloudwatch_batch(b)
+                b = []
+            if len(b) > 0:
+              c = put_cloudwatch_batch(b)
+            return c
+
+          def put_cloudwatch_batch(data):
+            #print(str(data))
+            r = cloudwatch.put_metric_data(
+              Namespace = 'alb_log' ,
+              MetricData = data
+            )
+            return r
+
+      Runtime: python3.6
+      MemorySize: 256
+      Timeout: 300
+      Description: ALB log (firehose output) to cloudwatch
+      Environment:
+        Variables:
+          CfnStackName: !Sub '${AWS::StackName}'
+      Tags:
+        - Key: CloudformationArn
+          Value: !Ref 'AWS::StackId'

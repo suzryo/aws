@@ -1,0 +1,57 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: S3(ALB access log) 20180511
+Parameters:
+  S3Expiredate:
+    Description: TTL S3
+    Type: String
+    Default: 7
+Resources:
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - Id: AutoDelete
+            Status: Enabled
+            ExpirationInDays: !Ref 'S3Expiredate'
+      VersioningConfiguration:
+        Status: Enabled
+
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref 'S3Bucket'
+      PolicyDocument:
+        Id: ElblogsBucketPolicy
+        Statement:
+          - Sid: AddPerm
+            Effect: Allow
+            Principal:
+              AWS:
+                - arn:aws:iam::582318560864:root
+                - arn:aws:iam::127311923021:root
+                - arn:aws:iam::033677994240:root
+                - arn:aws:iam::027434742980:root
+                - arn:aws:iam::797873946194:root
+                - arn:aws:iam::985666609251:root
+                - arn:aws:iam::054676820928:root
+                - arn:aws:iam::156460612806:root
+                - arn:aws:iam::652711504416:root
+                - arn:aws:iam::156460612806:root
+                - arn:aws:iam::009996457667:root
+                - arn:aws:iam::600734575887:root
+                - arn:aws:iam::383597477331:root
+                - arn:aws:iam::114774131450:root
+                - arn:aws:iam::797873946194:root
+                - arn:aws:iam::783225319266:root
+                - arn:aws:iam::718504428378:root
+                - arn:aws:iam::507241528517:root
+            Action:
+              - s3:PutObject
+            Resource:
+              - !Sub 'arn:aws:s3:::${S3Bucket}/*'
+
+Outputs:
+  S3Bucket:
+    Value: !Ref 'S3Bucket'
