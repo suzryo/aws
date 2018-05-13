@@ -1,10 +1,10 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: S3(alblog) Firehose S3(json) 20180510
+Description: S3(alblog) Firehose S3(json) 20180513
 Parameters:
   SourceS3Bucket:
     Description: S3 Bucket Name (ALB accesslog)
     Type: String
-    Default: c1-s3bucket-7gasi3f5jco4
+    Default: c1-s3bucket-#####
 
 Resources:
 
@@ -84,6 +84,10 @@ Resources:
                 Action:
                   - firehose:PutRecordBatch
                 Resource: !GetAtt 'Step2deliverystream.Arn'
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !GetAtt [Step2SqsDeadLetterQueue, Arn]
 
   Step2LambdaFunction:
     Type: AWS::Lambda::Function
@@ -228,23 +232,28 @@ Resources:
         - Key: CloudformationArn
           Value: !Ref 'AWS::StackId'
 
-  Step2deliverystream:
+  Step2SqsDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+
+  Step3deliverystream:
     DependsOn:
-      - Step2deliveryPolicy
+      - Step3deliveryPolicy
     Type: AWS::KinesisFirehose::DeliveryStream
     Properties:
       ExtendedS3DestinationConfiguration:
-        BucketARN: !Sub 'arn:aws:s3:::${Step3S3bucket}'
+        BucketARN: !Sub 'arn:aws:s3:::${Step4S3bucket}'
         BufferingHints:
           IntervalInSeconds: '300'
           SizeInMBs: '50'
         CompressionFormat: GZIP
         Prefix: firehose/alb_logs/
-        RoleARN: !GetAtt 'Step2deliveryRole.Arn'
+        RoleARN: !GetAtt 'Step3deliveryRole.Arn'
         ProcessingConfiguration:
           Enabled: 'false'
 
-  Step2deliveryRole:
+  Step3deliveryRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
@@ -259,7 +268,7 @@ Resources:
               StringEquals:
                 sts:ExternalId: !Ref 'AWS::AccountId'
 
-  Step2deliveryPolicy:
+  Step3deliveryPolicy:
     Type: AWS::IAM::Policy
     Properties:
       PolicyName: firehose_delivery_policy
@@ -280,13 +289,13 @@ Resources:
       Roles:
         - !Ref 'Step2deliveryRole'
 
-  Step2LogGroupFirehose:
+  Step3LogGroupFirehose:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub '/aws/firehose/${Step2deliverystream}'
       RetentionInDays: 7
 
-  Step3S3bucket:
+  Step4S3bucket:
     Type: AWS::S3::Bucket
     DeletionPolicy: Delete
     Properties:
@@ -294,7 +303,7 @@ Resources:
         Rules:
           - Id: AutoDelete
             Status: Enabled
-            ExpirationInDays: '3'
+            ExpirationInDays: '14'
       NotificationConfiguration:
         TopicConfigurations:
           - Event: s3:ObjectCreated:*
@@ -305,9 +314,9 @@ Resources:
                     Value: gz
                   - Name: prefix
                     Value: firehose/alb_logs
-            Topic: !Ref 'Step4SnsTopic'
+            Topic: !Ref 'Step5SnsTopic'
 
-  Step4SnsTopicPolicy:
+  Step5SnsTopicPolicy:
     Type: AWS::SNS::TopicPolicy
     Properties:
       PolicyDocument:
@@ -321,11 +330,11 @@ Resources:
             - s3.amazonaws.com
           Action:
           - sns:Publish
-          Resource: !Ref 'Step4SnsTopic'
+          Resource: !Ref 'Step5SnsTopic'
       Topics:
-      - !Ref 'Step4SnsTopic'
+      - !Ref 'Step5SnsTopic'
 
-  Step4SnsTopic:
+  Step5SnsTopic:
     Type: AWS::SNS::Topic
     Properties:
       DisplayName: s3-trigger-firehose-output
