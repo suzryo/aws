@@ -237,9 +237,12 @@ Resources:
             z["timestamp"] = b[1]
             z["elb"] = b[2]
             if len(b[3].split(':')) > 1:
+              z["client"] = b[3].split(':')[0]
               z["client_port"] = b[3].split(':')[1]
             if len(b[4].split(':')) > 1:
+              z["target"] = b[4].split(':')[0]
               z["target_port"] = b[4].split(':')[1]
+  
             z["request_processing_time"] = float(b[5])
             z["target_processing_time"] = float(b[6])
             z["response_processing_time"] = float(b[7])
@@ -264,8 +267,6 @@ Resources:
               d = a[10].split(' ')
               if len(d) > 1:
                 z["matched_rule_priority"] = d[1]
-            z["client"] = b[3].split(':')[0]
-            z["target"] = b[4].split(':')[0]
             if len(z["request"].split(' ')) > 2:
               z["request_method"] = z["request"].split(' ')[0]
               z["request_uri"] = z["request"].split(' ')[1]

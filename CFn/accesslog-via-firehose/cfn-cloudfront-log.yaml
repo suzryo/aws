@@ -1,6 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: Convert CloudFront access log to JSON via Firehose (20180514)
-
 Parameters:
   S3Expiredate:
     Description: Number of days to keep S3 file (S3 TTL)
@@ -10,6 +9,10 @@ Parameters:
     Description: Number of days to keep Cloudwatch logs (logs TTL)
     Type: String
     Default: 3
+  S3AthenaExpiredate:
+    Description: Number of days to keep S3 file (Athena)
+    Type: String
+    Default: 45
 
 Resources:
   Step1S3Bucket:
@@ -308,11 +311,179 @@ Resources:
           - Id: AutoDelete
             Status: Enabled
             ExpirationInDays: !Ref 'S3Expiredate'
+      NotificationConfiguration:
+        TopicConfigurations:
+          - Event: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: .gz
+                  - Name: prefix
+                    Value: firehose/cloudfront_logs/
+            Topic: !Ref 'Step6SnsTopic'
       VersioningConfiguration:
         Status: Enabled
+
+  Step6SnsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Id: MyTopicPolicy
+        Statement:
+        - Sid: allow-publish-s3
+          Effect: Allow
+          Principal:
+            Service:
+            - s3.amazonaws.com
+          Action:
+          - sns:Publish
+          Resource: !Ref 'Step6SnsTopic'
+      Topics:
+      - !Ref 'Step6SnsTopic'
+
+  Step6SnsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: s3-trigger-firehose-output
+      Subscription:
+      - Endpoint: !GetAtt 'Step7LambdaFunction.Arn'
+        Protocol: lambda
+
+  Step7LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref 'Step7LambdaFunction'
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref 'Step6SnsTopic'
+  Step7LogGroupLambda:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${Step7LambdaFunction}'
+      RetentionInDays: 14
+  Step7LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub 'arn:aws:s3:::${AWS::StackName}-*'
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub 'arn:aws:s3:::${AWS::StackName}-*'
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !GetAtt [Step7SqsDeadLetterQueue, Arn]
+
+  Step7SqsDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+
+  Step7LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      DeadLetterConfig: 
+        TargetArn: !GetAtt [Step7SqsDeadLetterQueue, Arn]
+      Role: !GetAtt 'Step7LambdaRole.Arn'
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          import json
+          import os
+          import urllib.parse
+          def lambda_handler(event, context):
+            z = parse_s3_event(event)
+            bucket_name = z['bucket_name']
+            key = z['key']
+            new_key = get_key_with_partition(key)
+            new_bucket = os.environ['s3_bucket']
+            s3 = boto3.client('s3')
+            r = s3.copy_object(Bucket=new_bucket, Key=new_key, CopySource={'Bucket': bucket_name, 'Key': key})
+          def parse_s3_event(event):
+            a = json.loads(event['Records'][0]['Sns']['Message'])
+            z = {}
+            z['bucket_name'] = a['Records'][0]['s3']['bucket']['name']
+            z['key'] = urllib.parse.unquote_plus(a['Records'][0]['s3']['object']['key'], encoding='utf-8')
+            return z
+          def get_key_with_partition(key):
+            a = key.split('/')
+            a.reverse()
+            z = {}
+            z['filename'] = a[0]
+            z['hour'] = a[1]
+            z['day'] = a[2]
+            z['month'] = a[3]
+            z['year'] = a[4]
+            z['prefix'] = get_key_prefix(key)
+            f = z['prefix'] + '/' + 'dt=' + z['year'] + '-' + z['month'] + '-' + z['day'] + '-' + z['hour'] + '/' + z['filename']
+            return f
+          def get_key_prefix(key):
+            a = key.split('/')
+            b = len(a) - 5
+            d = []
+            for c in a[:b]:
+              d.append(c)
+            e = '/'.join(d)
+            return e
+      Runtime: python3.6
+      MemorySize: 128
+      Timeout: 300
+      Description: Copy the S3 file output by Firehose for Athena (with partition)
+      Environment:
+        Variables:
+          CfnStackName: !Sub '${AWS::StackName}'
+          s3_bucket: !Ref 'Step8S3Bucket'
+      Tags:
+        - Key: CloudformationArn
+          Value: !Ref 'AWS::StackId'
+
+  Step8S3Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - Id: AutoDelete
+            Status: Enabled
+            ExpirationInDays: !Ref 'S3AthenaExpiredate'
 
 Outputs:
   S3BucketSource:
     Value: !Ref 'Step1S3Bucket'
   S3BucketJson:
     Value: !Ref 'Step5S3Bucket'
+  S3BucketAthena:
+    Value: !Ref 'Step8S3Bucket'
+
+
