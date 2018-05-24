@@ -180,7 +180,7 @@ Resources:
             # Process CLB log (.log)
             if (re.match('.*.log$', key)):
               response =s3.get_object(Bucket=bucket_name, Key=key)
-              body = response['Body'].read().decode('utf-8').splitlines()
+              body = response['Body'].read().decode('utf-8','ignore').splitlines()
               if len(body) > 0:
                 process_log(body)
         

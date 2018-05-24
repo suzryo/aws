@@ -146,7 +146,7 @@ Resources:
             # Process CloudFront log (.gz)
             if (re.match('.*.gz$', key)):
               response =s3.get_object(Bucket=bucket_name, Key=key)
-              body = gzip.decompress(response['Body'].read()).decode('utf-8').splitlines()
+              body = gzip.decompress(response['Body'].read()).decode('utf-8','ignore').splitlines()
               if len(body) > 0:
                 process_log(body)
         
@@ -197,7 +197,7 @@ Resources:
             z["cs_method"] = b[5]
             z["cs_host"] = b[6]
             z["cs_uri_stem"] = b[7]
-            z["sc_status"] = b[8]
+            z["cs_status"] = b[8]
             z["cs_referer"] = b[9]
             z["cs_user_agent"] = b[10]
             z["cs_uri_query"] = b[11]
