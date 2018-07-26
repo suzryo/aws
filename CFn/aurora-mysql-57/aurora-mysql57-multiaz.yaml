@@ -145,9 +145,8 @@ Resources:
       DBInstanceIdentifier: !Sub '${AWS::StackName}-dbinstance-2'
       AutoMinorVersionUpgrade: 'true'
       PubliclyAccessible: 'false'
-      SourceDBInstanceIdentifier: !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:db:${AWS::StackName}-dbinstance-1'
       StorageEncrypted: 'false'
-      PreferredMaintenanceWindow: Thu:19:35-Thu:19:35
+      PreferredMaintenanceWindow: Thu:19:35-Thu:20:05
       AvailabilityZone: !Select [1, !GetAZs {Ref: 'AWS::Region'}]
       DBInstanceClass: !Ref 'RdsDbInstanceClass'
       MonitoringInterval: 60
