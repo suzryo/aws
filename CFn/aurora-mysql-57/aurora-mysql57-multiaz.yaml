@@ -163,6 +163,7 @@ Resources:
       Family: aurora-mysql5.7
       Parameters:
         server_audit_logging: 0
+        server_audit_events: 'CONNECT,QUERY,QUERY_DCL,QUERY_DDL,QUERY_DML,TABLE'
       Tags:
       - Key: CloudFormationArn
         Value: !Ref 'AWS::StackId'
@@ -177,7 +178,7 @@ Resources:
         aurora_lab_mode: 0
         general_log: 1
         slow_query_log: 1
-        long_query_time: 10
+        long_query_time: 3
       Tags:
       - Key: CloudFormationArn
         Value: !Ref 'AWS::StackId'
@@ -193,6 +194,17 @@ Resources:
     Properties:
       LogGroupName: !Sub '/aws/rds/cluster/${AWS::StackName}-dbcluster/general'
       RetentionInDays: 14
+  LogGroupRdsAudit:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/rds/cluster/${AWS::StackName}-dbcluster/audit'
+      RetentionInDays: 14
+  LogGroupRdsSlowquery:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/rds/cluster/${AWS::StackName}-dbcluster/slowquery'
+      RetentionInDays: 14
+
 Outputs:
   RdsSecurityGroup:
     Value: !Ref 'RdsSecurityGroup'
