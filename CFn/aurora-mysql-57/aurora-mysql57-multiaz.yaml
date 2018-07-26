@@ -1,0 +1,221 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: RDS Aurora MySQL5.7 MultiAZ(20180726)
+Parameters:
+  VpcId:
+    Description: VPC ID
+    Type: AWS::EC2::VPC::Id
+  VpcRdsSubnetId1:
+    Description: RDS VPC subnet 1
+    Type: AWS::EC2::Subnet::Id
+    Default: 172.31.0.0/20
+  VpcRdsSubnetId2:
+    Description: RDS VPC subnet 2
+    Type: AWS::EC2::Subnet::Id
+    Default: 172.31.16.0/20
+  VpcApSubnet:
+    Description: AP VPC subnet
+    Type: String
+    Default: 172.31.0.0/16
+
+  RdsDbDatabaseName:
+    Description: DbDatabaseName
+    Type: String
+    Default: mysql57_database
+  RdsDbMasterUsername:
+    Description: RdsDbMasterUsername
+    Type: String
+    Default: hogehoge
+  RdsDbMasterUserPassword:
+    Description: RdsDbMasterUserPassword
+    Type: String
+    Default: fugafuga
+    NoEcho: true
+  RdsDbInstanceClass:
+    Description: DBInstanceClass
+    Type: String
+    Default: db.t2.small
+
+  Env:
+    Description: Choose the environment to create
+    Type: String
+    Default: development
+    AllowedValues:
+    - development
+    - staging
+    - production
+
+  MultiAzEnable:
+    Description: Choose MultiAz Enable
+    Type: String
+    Default: false
+    AllowedValues:
+    - true
+    - false
+
+Conditions: 
+  MultiAzEnable: !Equals [ !Ref MultiAzEnable, true ]
+
+Resources:
+  RdsDbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Database subnets for RDS
+      SubnetIds:
+        - !Ref VpcRdsSubnetId1
+        - !Ref VpcRdsSubnetId2
+      Tags:
+        - Key: CloudFormationArn
+          Value: !Ref 'AWS::StackId'
+        - Key: Env
+          Value: !Ref Env
+
+  RdsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VpcId'
+      GroupDescription: Allow MySQL (TCP3306)
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          CidrIp: !Ref VpcApSubnet
+      Tags:
+        - Key: CloudFormationArn
+          Value: !Ref 'AWS::StackId'
+        - Key: Env
+          Value: !Ref Env
+
+  MonitoringRdsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - monitoring.rds.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole
+      Path: /
+
+  RdsDbCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      DBSubnetGroupName: !Ref 'RdsDbSubnetGroup'
+      MasterUsername: !Ref 'RdsDbMasterUsername'
+      MasterUserPassword: !Ref 'RdsDbMasterUserPassword'
+      DatabaseName: !Ref 'RdsDbDatabaseName'
+      Engine: aurora-mysql
+      VpcSecurityGroupIds:
+        - !Ref 'RdsSecurityGroup'
+      DBClusterIdentifier : !Sub '${AWS::StackName}-dbcluster'
+      DBClusterParameterGroupName: !Ref 'RdsDbClusterParameterGroup'
+      PreferredBackupWindow: 18:05-18:35
+      BackupRetentionPeriod: 7
+      PreferredMaintenanceWindow: Thu:18:35-Thu:19:05
+      BackupRetentionPeriod: 7
+      Tags:
+        - Key: CloudFormationArn
+          Value: !Ref 'AWS::StackId'
+        - Key: Env
+          Value: !Ref Env
+
+  RdsDbInstance1:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBSubnetGroupName: !Ref 'RdsDbSubnetGroup'
+      DBParameterGroupName: !Ref 'RdsDbParameterGroup'
+      Engine: aurora-mysql
+      DBClusterIdentifier: !Ref 'RdsDbCluster'
+      DBInstanceIdentifier : !Sub '${AWS::StackName}-dbinstance-1'
+      AutoMinorVersionUpgrade: 'true'
+      PubliclyAccessible: 'false'
+      StorageEncrypted: 'false'
+      PreferredMaintenanceWindow: Thu:19:05-Thu:19:35
+      AvailabilityZone: !Select [0, !GetAZs {Ref: 'AWS::Region'}]
+      DBInstanceClass: !Ref 'RdsDbInstanceClass'
+      MonitoringInterval: 60
+      MonitoringRoleArn: !GetAtt 'MonitoringRdsRole.Arn'
+      Tags:
+        - Key: CloudFormationArn
+          Value: !Ref 'AWS::StackId'
+        - Key: Env
+          Value: !Ref Env
+
+  RdsDbInstance2:
+    Type: AWS::RDS::DBInstance
+    Condition: MultiAzEnable
+    Properties:
+      DBSubnetGroupName: !Ref 'RdsDbSubnetGroup'
+      DBParameterGroupName: !Ref 'RdsDbParameterGroup'
+      Engine: aurora-mysql
+      DBClusterIdentifier: !Ref 'RdsDbCluster'
+      DBInstanceIdentifier : !Sub '${AWS::StackName}-dbinstance-2'
+      AutoMinorVersionUpgrade: 'true'
+      PubliclyAccessible: 'false'
+      SourceDBInstanceIdentifier: !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:db:${AWS::StackName}-dbinstance-1'
+      StorageEncrypted: 'false'
+      PreferredMaintenanceWindow: Thu:19:35-Thu:19:35
+      AvailabilityZone: !Select [1, !GetAZs {Ref: 'AWS::Region'}]
+      DBInstanceClass: !Ref 'RdsDbInstanceClass'
+      MonitoringInterval: 60
+      MonitoringRoleArn: !GetAtt 'MonitoringRdsRole.Arn'
+      Tags:
+        - Key: CloudFormationArn
+          Value: !Ref 'AWS::StackId'
+        - Key: Env
+          Value: !Ref Env
+
+
+  RdsDbClusterParameterGroup:
+    Type: AWS::RDS::DBClusterParameterGroup
+    Properties:
+      Description: CloudFormation Aurora Cluster Parameter Group
+      Family: aurora-mysql5.7
+      Parameters:
+        server_audit_logging: 0
+      Tags:
+        - Key: CloudFormationArn
+          Value: !Ref 'AWS::StackId'
+        - Key: Env
+          Value: !Ref Env
+
+  RdsDbParameterGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      Description: CloudFormation Aurora Parameter Group
+      Family: aurora-mysql5.7
+      Parameters:
+        aurora_lab_mode: 0
+        general_log: 1
+        slow_query_log: 1
+        long_query_time: 10
+      Tags:
+        - Key: CloudFormationArn
+          Value: !Ref 'AWS::StackId'
+        - Key: Env
+          Value: !Ref Env
+
+  LogGroupRdsError:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/rds/cluster/${AWS::StackName}-dbcluster/error'
+      RetentionInDays: 14
+  LogGroupRdsGeneral:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/rds/cluster/${AWS::StackName}-dbcluster/general'
+      RetentionInDays: 14
+
+Outputs:
+  RdsSecurityGroup:
+    Value: !Ref 'RdsSecurityGroup'
+
+  RdsDbClusterEndpoint:
+    Value: !GetAtt 'RdsDbCluster.Endpoint.Address'
+
+  RdsDbClusterReadEndpoint:
+    Value: !GetAtt 'RdsDbCluster.ReadEndpoint.Address'
