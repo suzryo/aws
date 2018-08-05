@@ -1,0 +1,147 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: vpc flowlog to firehose 20180506
+Parameters:
+  flowlogsRoleArn:
+    Description: FlowLog Service Role
+    Type: String
+    Default: arn:aws:iam::554474346280:role/flowlogsRole
+  flowlogTargetId:
+    Description: FlowLog Target ID
+    Type: String
+    Default: eni-85d7c28b
+Resources:
+  LogGroupFlowLog:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/flowlog/${AWS::StackName}'
+      RetentionInDays: 3
+  VpcFlowLog:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      DeliverLogsPermissionArn: !Ref 'flowlogsRoleArn'
+      LogGroupName: !Sub '/aws/flowlog/${AWS::StackName}'
+      ResourceId: !Ref 'flowlogTargetId'
+      ResourceType: NetworkInterface
+      TrafficType: ALL
+
+  SubscriptionFilter:
+    Type: AWS::Logs::SubscriptionFilter
+    DependsOn: LambdaPermission
+    Properties: 
+      DestinationArn: !GetAtt 'LambdaFunction.Arn'
+      FilterPattern: '.'
+      LogGroupName: !Ref 'LogGroupFlowLog'
+
+  LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref 'LambdaFunction'
+      Action: lambda:*
+      Principal: !Sub 'logs.${AWS::Region}.amazonaws.com'
+      SourceArn: !GetAtt 'LogGroupFlowLog.Arn'
+
+  LogGroupLambda:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${LambdaFunction}'
+      RetentionInDays: 3
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - logs:*
+                Resource: '*'
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt 'LambdaRole.Arn'
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          import json
+          import os
+          import datetime
+          import base64
+          import gzip
+          
+          def lambda_handler(event, context):
+            #print(str(event))
+            #print(str(event['awslogs']['data']))
+            #print(str(gzip.decompress(base64.b64decode(event['awslogs']['data']))['logEvents']))
+
+            logEvents = decode_log_events(event)
+            #logEvents = event['logEvents']
+
+            for a in logEvents:
+              parse_log(a)
+
+
+          def parse_log(line):
+
+            a = line['message']
+            b = a.split(' ')
+            z = {}
+            z["version"] = b[0]
+            z["account_id"] = b[1]
+            z["interface_id"] = b[2]
+            z["srcaddr"]    = b[3]
+            z["dstaddr"]    = b[4]
+            z["srcport"]    = b[5]
+            z["dstport"]    = b[6]
+            z["protocol"] = b[7]
+            z["packets"]    = float(b[8])
+            z["bytes"]    = float(b[9])
+            z["start"]    = int(b[10])
+            z["end"]    = int(b[11])
+            z["action"]    = b[12]
+            z["log_status"] = b[13]
+    
+            z["start_datetime"] = datetime.datetime.fromtimestamp(z["start"]).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+            z["end_datetime"] = datetime.datetime.fromtimestamp(z["end"]).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+
+            #print(str(z))
+            return z
+
+          def decode_log_events(event):
+
+            a = event['awslogs']['data']
+            b = base64.b64decode(a)
+            c = gzip.decompress(b)
+            d = json.loads(c))
+            e = d['logEvents']
+  
+            #print(str(e))
+            return e
+
+          
+      Runtime: python3.6
+      MemorySize: 256
+      Timeout: 300
+      Description: flouwlogs lambda
+      Tags:
+        - Key: CloudformationArn
+          Value: !Ref 'AWS::StackId'

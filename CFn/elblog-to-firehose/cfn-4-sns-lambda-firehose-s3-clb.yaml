@@ -1,8 +1,12 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: S3(alblog) Firehose S3(json) 20180513
+Description: S3(clblog) Firehose S3(json) 20180513
 Parameters:
   SourceS3Bucket:
-    Description: S3 Bucket Name (ALB accesslog)
+    Description: S3 Bucket Name (CLB accesslog)
+    Type: String
+    Default: c1-s3bucket-#####
+  OutputS3Bucket:
+    Description: S3 Bucket Name (FirehoseOutput)
     Type: String
     Default: c1-s3bucket-#####
 
@@ -29,7 +33,7 @@ Resources:
   Step1SnsTopic:
     Type: AWS::SNS::Topic
     Properties:
-      DisplayName: s3-trigger-alb-output
+      DisplayName: s3-trigger-elb-output
       Subscription:
         - Endpoint: !GetAtt 'Step2LambdaFunction.Arn'
           Protocol: lambda
@@ -109,16 +113,16 @@ Resources:
 
           s3 = boto3.client('s3')
           firehose = boto3.client('firehose')
-  
+
           def lambda_handler(event, context):
             a = parse_s3_event(event)
             bucket_name = a['bucket_name']
             key = a['key']
 
-            # Process ALB log (gzip)
-            if (re.match('.*.gz$', key)):
+            # Process CLB log (.log)
+            if (re.match('.*.log$', key)):
               response =s3.get_object(Bucket=bucket_name, Key=key)
-              body = gzip.decompress(response['Body'].read()).decode('utf-8').splitlines()
+              body = response['Body'].read().decode('utf-8').splitlines()
               if len(body) > 0:
                 process_log(body)
         
@@ -149,54 +153,44 @@ Resources:
             a = line.split('"')
             b = a[0].split(' ')
 
-            # ALB Log
-            if len(b) == 13:
-              if b[2].split('/')[0] == 'app':
-                if (re.match('[0-9]...-[0-9].-[0-9].T[0-9].:[0-9].:[0-9].\.[[0-9]*Z' , b[1])):
-                  z = parse_alb_log(a)
+            # CLB Log
+            if len(b) == 12:
+              if (re.match('[0-9]...-[0-9].-[0-9].T[0-9].:[0-9].:[0-9].\.[[0-9]*Z' , b[0])):
+                z = parse_clb_log(a)
 
+            #Column check (number)
             if len(z) > 10:
-              #print(z)
+              print(z)
               return json.dumps(z) + "\n"
 
-          def parse_alb_log(a):
+          def parse_clb_log(a):
             z = {}
             b = a[0].split(' ')
-
-            # ALB Log
-            z["type"] = b[0]
-            z["timestamp"] = b[1]
-            z["elb"] = b[2]
+            # CLB Log
+            z["timestamp"] = b[0]
+            z["elb"] = b[1]
+            if len(b[2].split(':')) > 1:
+              z["client"] =  b[2].split(':')[0]
+              z["client_port"] = b[2].split(':')[1]
             if len(b[3].split(':')) > 1:
-              z["client_port"] = b[3].split(':')[1]
-            if len(b[4].split(':')) > 1:
-              z["target_port"] = b[4].split(':')[1]
-            z["request_processing_time"] = float(b[5])
-            z["target_processing_time"] = float(b[6])
-            z["response_processing_time"] = float(b[7])
-            z["elb_status_code"] = b[8]
-            z["target_status_code"] = b[9]
-            z["received_bytes"] = float(b[10])
-            z["sent_bytes"] = float(b[11])
+              z["backend"] =  b[3].split(':')[0]
+              z["backend_port"] = b[3].split(':')[1]
+            z["request_processing_time"] = float(b[4])
+            z["backend_processing_time"] = float(b[5])
+            z["response_processing_time"] = float(b[6])
+            z["elb_status_code"] = b[7]
+            z["backend_status_code"] = b[8]
+            z["received_bytes"] = float(b[9])
+            z["sent_bytes"] = float(b[10])
             z["request"] = a[1]
             z["user_agent"] = a[3]
-
             c = a[4].split(' ')
-            if len(c) == 5:
+            if len(c) == 2:
               z["ssl_cipher"] = c[1]
               z["ssl_protocol"] = c[2]
-              z["target_group_arn"] = c[3]
-            z["trace_id"] = a[5]
-            z["domain_name"] = a[7]
-            z["chosen_cert_arn"] = a[9]
-            z["matched_rule_priority"] = a[10]
-
-            if len(a) > 10:
-              d = a[10].split(' ')
-              if len(d) > 1:
-                z["matched_rule_priority"] = d[1]
-            z["client"] = b[3].split(':')[0]
-            z["target"] = b[4].split(':')[0]
+            if len(b[3].split(':')) > 1:
+              z["client_port"] = b[3].split(':')[1]
+              z["client_port"] = b[3].split(':')[1]
             if len(z["request"].split(' ')) > 2:
               z["request_method"] = z["request"].split(' ')[0]
               z["request_uri"] = z["request"].split(' ')[1]
@@ -210,12 +204,6 @@ Resources:
                 z["request_uri_path"] = e.path
                 z["request_uri_query"] = e.query
                 z["request_uri_fragment"] = e.fragment
-              else:
-                z["request_uri_scheme"] = z["request_uri"].split(':')[0]
-                z["request_uri_user"] = ''
-                z["request_uri_host"] = z["request_uri"].split('/')[2].split(':')[0]
-                z["request_uri_port"] = z["request_uri"].split(':')[2].split('-')[0]
-                z["request_uri_path"] = ''
             return z
 
           def PutRecordBatchFirehose(data):
@@ -249,12 +237,12 @@ Resources:
     Type: AWS::KinesisFirehose::DeliveryStream
     Properties:
       ExtendedS3DestinationConfiguration:
-        BucketARN: !Sub 'arn:aws:s3:::${Step4S3bucket}'
+        BucketARN: !Sub 'arn:aws:s3:::${OutputS3Bucket}'
         BufferingHints:
           IntervalInSeconds: '300'
           SizeInMBs: '50'
         CompressionFormat: GZIP
-        Prefix: firehose/alb_logs/
+        Prefix: firehose/clb_logs/
         RoleARN: !GetAtt 'Step3deliveryRole.Arn'
         ProcessingConfiguration:
           Enabled: 'false'
@@ -290,8 +278,8 @@ Resources:
               - s3:ListBucketMultipartUploads
               - s3:PutObject
             Resource:
-              - !Sub 'arn:aws:s3:::${Step4S3bucket}'
-              - !Sub 'arn:aws:s3:::${Step4S3bucket}*'
+              - !Sub 'arn:aws:s3:::${OutputS3Bucket}'
+              - !Sub 'arn:aws:s3:::${OutputS3Bucket}*'
       Roles:
         - !Ref 'Step3deliveryRole'
 
@@ -300,47 +288,3 @@ Resources:
     Properties:
       LogGroupName: !Sub '/aws/firehose/${Step3deliverystream}'
       RetentionInDays: 7
-
-  Step4S3bucket:
-    Type: AWS::S3::Bucket
-    DeletionPolicy: Delete
-    Properties:
-      LifecycleConfiguration:
-        Rules:
-          - Id: AutoDelete
-            Status: Enabled
-            ExpirationInDays: '14'
-      NotificationConfiguration:
-        TopicConfigurations:
-          - Event: s3:ObjectCreated:*
-            Filter:
-              S3Key:
-                Rules:
-                  - Name: suffix
-                    Value: gz
-                  - Name: prefix
-                    Value: firehose/alb_logs
-            Topic: !Ref 'Step5SnsTopic'
-
-  Step5SnsTopicPolicy:
-    Type: AWS::SNS::TopicPolicy
-    Properties:
-      PolicyDocument:
-        Version: '2012-10-17'
-        Id: MyTopicPolicy
-        Statement:
-        - Sid: allow-publish-s3
-          Effect: Allow
-          Principal:
-            Service:
-            - s3.amazonaws.com
-          Action:
-          - sns:Publish
-          Resource: !Ref 'Step5SnsTopic'
-      Topics:
-      - !Ref 'Step5SnsTopic'
-
-  Step5SnsTopic:
-    Type: AWS::SNS::Topic
-    Properties:
-      DisplayName: s3-trigger-firehose-output

@@ -1,0 +1,176 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: s3 for firehose (for athena with partition) 20180509
+Parameters:
+  SourceS3Expiredate:
+    Description: TTL source S3 bucket
+    Type: String
+    Default: 7
+  OutputS3Expiredate:
+    Description: TTL output S3 bucket
+    Type: String
+    Default: 100
+Resources:
+  SourceS3bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - Id: AutoDelete
+            Status: Enabled
+            ExpirationInDays: !Ref 'SourceS3Expiredate'
+      NotificationConfiguration:
+        TopicConfigurations:
+          - Event: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: gz
+                  - Name: prefix
+                    Value: firehose/sample_logs
+            Topic: !Ref 'SnsTopic'
+
+  OutputS3bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - Id: AutoDelete
+            Status: Enabled
+            ExpirationInDays: !Ref 'OutputS3Expiredate'
+
+  SnsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Id: MyTopicPolicy
+        Statement:
+        - Sid: allow-publish-s3
+          Effect: Allow
+          Principal:
+            Service:
+            - s3.amazonaws.com
+          Action:
+          - sns:Publish
+          Resource: !Ref 'SnsTopic'
+      Topics:
+      - !Ref 'SnsTopic'
+
+  SnsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: s3-trigger-firehose-output
+      Subscription:
+      - Endpoint: !GetAtt 'LambdaFunction.Arn'
+        Protocol: lambda
+
+  LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref 'LambdaFunction'
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref 'SnsTopic'
+  LogGroupLambda:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${LambdaFunction}'
+      RetentionInDays: 14
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub 'arn:aws:s3:::${AWS::StackName}-*'
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub 'arn:aws:s3:::${AWS::StackName}-*'
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt 'LambdaRole.Arn'
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          import json
+          import os
+          import urllib.parse
+          def lambda_handler(event, context):
+            z = parse_s3_event(event)
+            bucket_name = z['bucket_name']
+            key = z['key']
+            new_key = get_key_with_partition(key)
+            new_bucket = os.environ['s3_bucket']
+            s3 = boto3.client('s3')
+            r = s3.copy_object(Bucket=new_bucket, Key=new_key, CopySource={'Bucket': bucket_name, 'Key': key})
+          def parse_s3_event(event):
+            a = json.loads(event['Records'][0]['Sns']['Message'])
+            z = {}
+            z['bucket_name'] = a['Records'][0]['s3']['bucket']['name']
+            z['key'] = urllib.parse.unquote_plus(a['Records'][0]['s3']['object']['key'], encoding='utf-8')
+            return z
+          def get_key_with_partition(key):
+            a = key.split('/')
+            a.reverse()
+            z = {}
+            z['filename'] = a[0]
+            z['hour'] = a[1]
+            z['day'] = a[2]
+            z['month'] = a[3]
+            z['year'] = a[4]
+            z['prefix'] = get_key_prefix(key)
+            f = z['prefix'] + '/' + 'dt=' + z['year'] + '-' + z['month'] + '-' + z['day'] + '-' + z['hour'] + '/' + z['filename']
+            return f
+          def get_key_prefix(key):
+            a = key.split('/')
+            b = len(a) - 5
+            d = []
+            for c in a[:b]:
+              d.append(c)
+            e = '/'.join(d)
+            return e
+      Runtime: python3.6
+      MemorySize: 128
+      Timeout: 300
+      Description: Copy the S3 file output by Firehose for Athena (with partition)
+      Environment:
+        Variables:
+          CfnStackName: !Sub '${AWS::StackName}'
+          s3_bucket: !Ref 'OutputS3bucket'
+      Tags:
+        - Key: CloudformationArn
+          Value: !Ref 'AWS::StackId'
+
+
