@@ -1,0 +1,311 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Convert CloudFront access log to JSON via Firehose (20180514)
+
+Parameters:
+  S3Expiredate:
+    Description: Number of days to keep S3 file (S3 TTL)
+    Type: String
+    Default: 10
+  CWlogsExpiredate:
+    Description: Number of days to keep Cloudwatch logs (S3 TTL)
+    Type: String
+    Default: 3
+
+Resources:
+  Step1S3Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - Id: AutoDelete
+            Status: Enabled
+            ExpirationInDays: !Ref 'S3Expiredate'
+      NotificationConfiguration:
+        TopicConfigurations:
+          - Event: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: gz
+            Topic: !Ref 'Step2SnsTopic'
+      VersioningConfiguration:
+        Status: Enabled
+
+  Step2SnsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Id: MyTopicPolicy
+        Statement:
+          - Sid: allow-publish-s3
+            Effect: Allow
+            Principal:
+              Service:
+                - s3.amazonaws.com
+            Action:
+              - sns:Publish
+            Resource: !Ref 'Step2SnsTopic'
+      Topics:
+        - !Ref 'Step2SnsTopic'
+
+  Step2SnsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: !Sub 's3-logs-ObjectCreated'
+      Subscription:
+        - Endpoint: !GetAtt 'Step3LambdaFunction.Arn'
+          Protocol: lambda
+
+  Step3LambdaLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref 'Step3LambdaFunction'
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref 'Step2SnsTopic'
+
+  Step3LogGroupLambda:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${Step3LambdaFunction}'
+      RetentionInDays: !Ref 'CWlogsExpiredate'
+
+  Step3LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub 'arn:aws:s3:::${AWS::StackName}-*'
+              - Effect: Allow
+                Action:
+                  - firehose:PutRecordBatch
+                Resource: !GetAtt 'Step4deliverystream.Arn'
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !GetAtt [Step3SqsDeadLetterQueue, Arn]
+
+  Step3LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt 'Step3LambdaRole.Arn'
+      DeadLetterConfig: 
+        TargetArn: !GetAtt [Step3SqsDeadLetterQueue, Arn]
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          import json
+          import os
+          import urllib.parse
+          import gzip
+          from datetime import datetime
+          import base64
+          import re
+
+          s3 = boto3.client('s3')
+          firehose = boto3.client('firehose')
+
+          def lambda_handler(event, context):
+            a = parse_s3_event(event)
+            bucket_name = a['bucket_name']
+            key = a['key']
+
+            # Process CloudFront log (.gz)
+            if (re.match('.*.gz$', key)):
+              response =s3.get_object(Bucket=bucket_name, Key=key)
+              body = gzip.decompress(response['Body'].read()).decode('utf-8').splitlines()
+              if len(body) > 0:
+                process_log(body)
+        
+          def parse_s3_event(event):
+            a = json.loads(event['Records'][0]['Sns']['Message'])
+            z = {}
+            z['bucket_name'] = a['Records'][0]['s3']['bucket']['name']
+            z['key'] = urllib.parse.unquote_plus(a['Records'][0]['s3']['object']['key'], encoding='utf-8')
+            return z
+
+          def process_log(data):
+            i = 0
+            c = []
+            for a in data:
+              b = parse_log(a)
+              if b is not None:
+                c.append({'Data': b})
+                i = i + 1
+              if i == 100:
+                PutRecordBatchFirehose(c)
+                i = 0
+                c = []
+            if len(c) > 0:
+              PutRecordBatchFirehose(c)
+
+          def parse_log(line):
+            z = {}
+            a = line.split('\t')
+
+            # cloudfront Log
+            if len(a) => 26:
+              if (re.match('[0-9]...-[0-9].-[0-9].' , a[0])):
+                if (re.match('[0-9].:[0-9].:[0-9].' , a[1])):
+                  z = parse_cloudfront_log(a)
+
+            #Column check (number)
+            if len(z) > 25:
+              #print(z)
+              return json.dumps(z) + "\n"
+
+          def parse_cloudfront_log(b):
+            z = {}
+            z["date"] = b[0]
+            z["time"] = b[1]
+            z["x_edge_location"] = b[2]
+            z["sc_bytes"] = float(b[3])
+            z["c_ip"] = b[4]
+            z["cs_method"] = b[5]
+            z["cs_host"] = b[6]
+            z["cs_uri_stem"] = b[7]
+            z["sc_status"] = b[8]
+            z["cs_referer"] = b[9]
+            z["cs_user_agent"] = b[10]
+            z["cs_uri_query"] = b[11]
+            z["cs_cookie"] = b[12]
+            z["x_edge_result_type"] = b[13]
+            z["x_edge_request_id"] = b[14]
+            z["x_host_header"] = b[15]
+            z["cs_protocol"] = b[16]
+            z["cs_bytes"] = float(b[17])
+            z["time_taken"] = float(b[18])
+            z["x_forwarded_for"] = b[19]
+            z["ssl_protocol"] = b[20]
+            z["ssl_cipher"] = b[21]
+            z["x_edge_response_result_type"] = b[22]
+            z["cs_protocol_version"] = b[23]
+            z["fle_status"] = b[3]
+            z["fle_encrypted_fields"] = b[3]
+
+            z["timestamp"] = z["date"] + 'T' + z["time"] + '.000000Z'
+
+            return z
+
+          def PutRecordBatchFirehose(data):
+            firehose_stream_name = os.environ['firehose_stream_name']
+            r = firehose.put_record_batch(
+              DeliveryStreamName = firehose_stream_name,
+              Records = data
+            )
+
+            print(str(r["ResponseMetadata"]["HTTPHeaders"]))
+
+      Runtime: python3.6
+      MemorySize: 128
+      Timeout: 300
+      Description: CloudFront log S3 to firehose
+      Environment:
+        Variables:
+          firehose_stream_name: !Ref 'Step4deliverystream'
+      Tags:
+        - Key: CloudformationArn
+          Value: !Ref 'AWS::StackId'
+
+  Step3SqsDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+
+  Step4deliverystream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !Sub 'arn:aws:s3:::${Step5S3Bucket}'
+        BufferingHints:
+          IntervalInSeconds: '300'
+          SizeInMBs: '50'
+        CompressionFormat: GZIP
+        Prefix: firehose/cloudfront_logs/
+        RoleARN: !GetAtt 'Step4deliveryRole.Arn'
+        ProcessingConfiguration:
+          Enabled: 'false'
+
+  Step4deliveryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ''
+            Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref 'AWS::AccountId'
+
+  Step4deliveryPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: firehose_delivery_policy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:AbortMultipartUpload
+              - s3:GetBucketLocation
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:ListBucketMultipartUploads
+              - s3:PutObject
+            Resource:
+              - !Sub 'arn:aws:s3:::${Step5S3Bucket}'
+              - !Sub 'arn:aws:s3:::${Step5S3Bucket}*'
+      Roles:
+        - !Ref 'Step4deliveryRole'
+
+  Step4LogGroupFirehose:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/firehose/${Step4deliverystream}'
+      RetentionInDays: !Ref 'CWlogsExpiredate'
+
+  Step5S3Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - Id: AutoDelete
+            Status: Enabled
+            ExpirationInDays: !Ref 'S3Expiredate'
+      VersioningConfiguration:
+        Status: Enabled
