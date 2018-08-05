@@ -1,20 +1,24 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: cloudwatchlogs to firehose direct (no lambda) 20180520
+Description: CloudwatchLogs to Firehose_S3_lambda_S3 (2018-5-27)
 Parameters:
   CWlogsExpiredate:
     Description: Number of days to keep Cloudwatch logs
     Type: String
-    Default: 10
-  S3Expiredate:
-    Description: Number of days to keep S3 file
+    Default: 3
+  Step4S3Expiredate:
+    Description: Number of days to keep S3 file 
     Type: String
     Default: 10
+  FirehosePrefix:
+    Description: Firehose output S3 prefix
+    Type: String
+    Default: 'firehose/cwlogs_firehose/'
 
 Resources:
   Step1LogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/logs/${AWS::StackName}'
+      LogGroupName: !Sub '/cw_logs/${AWS::StackName}'
       RetentionInDays: !Ref 'CWlogsExpiredate'
 
   Step2SubscriptionFilter:
@@ -44,24 +48,9 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  - firehose:*
+                  - firehose:PutRecord
+                  - firehose:PutRecords
                 Resource: !GetAtt 'Step3deliverystream.Arn'
-
-  Step3deliverystream:
-    DependsOn:
-      - Step3deliveryPolicy
-    Type: AWS::KinesisFirehose::DeliveryStream
-    Properties:
-      ExtendedS3DestinationConfiguration:
-        BucketARN: !Sub 'arn:aws:s3:::${Step4S3bucket}'
-        BufferingHints:
-          IntervalInSeconds: '60'
-          SizeInMBs: '50'
-        CompressionFormat: GZIP
-        Prefix: firehose/vpc_flowlog_direct/
-        RoleARN: !GetAtt 'Step3deliveryRole.Arn'
-        ProcessingConfiguration:
-          Enabled: 'false'
 
   Step3deliveryRole:
     Type: AWS::IAM::Role
@@ -105,6 +94,22 @@ Resources:
       LogGroupName: !Sub '/aws/firehose/${Step3deliverystream}'
       RetentionInDays: 7
 
+  Step3deliverystream:
+    DependsOn:
+      - Step3deliveryPolicy
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !Sub 'arn:aws:s3:::${Step4S3bucket}'
+        BufferingHints:
+          IntervalInSeconds: '60'
+          SizeInMBs: '50'
+        CompressionFormat: UNCOMPRESSED
+        Prefix: !Sub '${FirehosePrefix}${AWS::StackName}/'
+        RoleARN: !GetAtt 'Step3deliveryRole.Arn'
+        ProcessingConfiguration:
+          Enabled: 'false'
+
   Step4S3bucket:
     Type: AWS::S3::Bucket
     DeletionPolicy: Delete
@@ -113,4 +118,4 @@ Resources:
         Rules:
           - Id: AutoDelete
             Status: Enabled
-            ExpirationInDays: !Ref 'S3Expiredate'
+            ExpirationInDays: !Ref 'Step4S3Expiredate'

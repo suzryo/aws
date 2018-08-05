@@ -1,0 +1,256 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: vpc-flowlog to firehose (json) 20180520
+Parameters:
+  CWlogsExpiredate:
+    Description: Number of days to keep Cloudwatch logs
+    Type: String
+    Default: 10
+  S3Expiredate:
+    Description: Number of days to keep S3 file
+    Type: String
+    Default: 10
+
+Resources:
+  Step1LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/cw_logs/${AWS::StackName}'
+      RetentionInDays: !Ref 'CWlogsExpiredate'
+
+  Step2SubscriptionFilter:
+    Type: AWS::Logs::SubscriptionFilter
+    DependsOn: Step3LambdaPermission
+    Properties: 
+      DestinationArn: !GetAtt 'Step3LambdaFunction.Arn'
+      FilterPattern: ''
+      LogGroupName: !Ref 'Step1LogGroup'
+
+  Step3LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref 'Step3LambdaFunction'
+      Action: lambda:InvokeFunction
+      Principal: !Sub 'logs.${AWS::Region}.amazonaws.com'
+      SourceArn: !GetAtt 'Step1LogGroup.Arn'
+
+  Step3LogGroupLambda:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${Step3LambdaFunction}'
+      RetentionInDays: 3
+
+  Step3LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - logs:*
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - firehose:PutRecordBatch
+                Resource: !GetAtt 'Step4deliverystream.Arn'
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !GetAtt [Step3SqsDeadLetterQueue, Arn]
+
+  Step3LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      DeadLetterConfig: 
+        TargetArn: !GetAtt [Step3SqsDeadLetterQueue, Arn]
+      Role: !GetAtt 'Step3LambdaRole.Arn'
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          import json
+          import os
+          import datetime
+          import base64
+          import gzip
+          firehose = boto3.client('firehose')
+          
+          def lambda_handler(event, context):
+            #print(str(event))
+            #print(str(event['awslogs']['data']))
+            #print(str(gzip.decompress(base64.b64decode(event['awslogs']['data']))['logEvents']))
+            
+            a = decode_log_events(event)
+            if len(a) > 0:
+              process_log(a)
+
+          def process_log(data):
+            i = 0
+            c = []
+            for a in data:
+              b = parse_log(a)
+              if b is not None:
+                c.append({'Data': b})
+                i = i + 1
+              if i == 100:
+                PutRecordBatchFirehose(c)
+                i = 0
+                c = []
+            if len(c) > 0:
+              PutRecordBatchFirehose(c)
+
+          def parse_log(line):
+
+            a = line['message']
+            b = a.split(' ')
+            z = {}
+            z["version"] = b[0]
+            z["account_id"] = b[1]
+            z["interface_id"] = b[2]
+            z["srcaddr"]    = b[3]
+            z["dstaddr"]    = b[4]
+            z["srcport"]    = b[5]
+            z["dstport"]    = b[6]
+            z["protocol"] = b[7]
+            z["packets"]    = float(b[8])
+            z["bytes"]    = float(b[9])
+            z["start"]    = int(b[10])
+            z["end"]    = int(b[11])
+            z["action"]    = b[12]
+            z["log_status"] = b[13]
+    
+            z["start_datetime"] = datetime.datetime.fromtimestamp(z["start"]).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+            z["end_datetime"] = datetime.datetime.fromtimestamp(z["end"]).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+
+            z["logs_timestamp"] = datetime.datetime.fromtimestamp(float(line['timestamp'])/1000).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+            #print(str(z))
+            return json.dumps(z) + "\n"
+
+          def decode_log_events(event):
+
+            e = ''
+            if 'awslogs' in event:
+              if 'data' in event['awslogs']:
+                a = event['awslogs']['data']
+                b = base64.b64decode(a)
+                c = gzip.decompress(b)
+                d = json.loads(c)
+                e = d['logEvents']
+  
+            #print(str(e))
+            return e
+
+          def PutRecordBatchFirehose(data):
+            firehose_stream_name = os.environ['firehose_stream_name']
+            r = firehose.put_record_batch(
+              DeliveryStreamName = firehose_stream_name,
+              Records = data
+            )
+            #print(str(data))
+            #print(str(r["ResponseMetadata"]["HTTPHeaders"]))
+          
+      Runtime: python3.6
+      MemorySize: 256
+      Timeout: 300
+      Description: VPC-flowlog(cloudwatchlogs) to firehose
+      Environment:
+        Variables:
+          firehose_stream_name: !Ref 'Step4deliverystream'
+      Tags:
+        - Key: CloudformationArn
+          Value: !Ref 'AWS::StackId'
+
+  Step3SqsDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+
+
+  Step4deliverystream:
+    DependsOn:
+      - Step4deliveryPolicy
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !Sub 'arn:aws:s3:::${Step5S3bucket}'
+        BufferingHints:
+          IntervalInSeconds: '60'
+          SizeInMBs: '50'
+        CompressionFormat: GZIP
+        Prefix: !Sub 'firehose/vpc_flowlog/${AWS::StackName}/'
+        RoleARN: !GetAtt 'Step4deliveryRole.Arn'
+        ProcessingConfiguration:
+          Enabled: 'false'
+
+  Step4deliveryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ''
+            Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref 'AWS::AccountId'
+
+  Step4deliveryPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: firehose_delivery_policy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:AbortMultipartUpload
+              - s3:GetBucketLocation
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:ListBucketMultipartUploads
+              - s3:PutObject
+            Resource:
+              - !Sub 'arn:aws:s3:::${Step5S3bucket}'
+              - !Sub 'arn:aws:s3:::${Step5S3bucket}*'
+          - Effect: Allow
+            Action:
+              - kinesis:*
+      Roles:
+        - !Ref 'Step4deliveryRole'
+
+  Step4LogGroupFirehose:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/firehose/${Step4deliverystream}'
+      RetentionInDays: 7
+
+  Step5S3bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - Id: AutoDelete
+            Status: Enabled
+            ExpirationInDays: !Ref 'S3Expiredate'

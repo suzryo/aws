@@ -1,0 +1,319 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudwatchLogs to Firehose(S3) (2018-5-27)
+Parameters:
+  CWlogsExpiredate:
+    Description: Number of days to keep Cloudwatch logs
+    Type: String
+    Default: 3
+  S3Expiredate:
+    Description: Number of days to keep S3 file
+    Type: String
+    Default: 10
+  Step7S3Expiredate:
+    Description: Number of days to keep S3 file
+    Type: String
+    Default: 10
+  FirehosePrefix:
+    Description: Firehose output S3 prefix
+    Type: String
+    Default: 'firehose/cwlogs_firehose/'
+
+Resources:
+  Step1LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/cw_logs/${AWS::StackName}'
+      RetentionInDays: !Ref 'CWlogsExpiredate'
+
+  Step2SubscriptionFilter:
+    Type: AWS::Logs::SubscriptionFilter
+    Properties: 
+      DestinationArn: !GetAtt 'Step3deliverystream.Arn'
+      FilterPattern: ''
+      LogGroupName: !Ref 'Step1LogGroup'
+      RoleArn: !GetAtt 'Step2LogsRole.Arn'
+
+  Step2LogsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub 'logs.${AWS::Region}.amazonaws.com'
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - firehose:PutRecord
+                  - firehose:PutRecords
+                Resource: !GetAtt 'Step3deliverystream.Arn'
+
+  Step3deliveryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ''
+            Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref 'AWS::AccountId'
+
+  Step3deliveryPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: firehose_delivery_policy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:AbortMultipartUpload
+              - s3:GetBucketLocation
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:ListBucketMultipartUploads
+              - s3:PutObject
+            Resource:
+              - !Sub 'arn:aws:s3:::${Step4S3bucket}'
+              - !Sub 'arn:aws:s3:::${Step4S3bucket}*'
+      Roles:
+        - !Ref 'Step3deliveryRole'
+
+  Step3LogGroupFirehose:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/firehose/${Step3deliverystream}'
+      RetentionInDays: 7
+
+  Step3deliverystream:
+    DependsOn:
+      - Step3deliveryPolicy
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !Sub 'arn:aws:s3:::${Step4S3bucket}'
+        BufferingHints:
+          IntervalInSeconds: '60'
+          SizeInMBs: '50'
+        CompressionFormat: UNCOMPRESSED
+        Prefix: !Sub '${FirehosePrefix}/${AWS::StackName}/'
+        RoleARN: !GetAtt 'Step3deliveryRole.Arn'
+        ProcessingConfiguration:
+          Enabled: 'false'
+
+  Step4S3bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - Id: AutoDelete
+            Status: Enabled
+            ExpirationInDays: !Ref 'S3Expiredate'
+      NotificationConfiguration:
+        TopicConfigurations:
+          - Event: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: !Sub '${FirehosePrefix}/${AWS::StackName}/'
+            Topic: !Ref 'Step5SnsTopic'
+      VersioningConfiguration:
+        Status: Enabled
+
+  Step5SnsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Id: MyTopicPolicy
+        Statement:
+          - Sid: allow-publish-s3
+            Effect: Allow
+            Principal:
+              Service:
+                - s3.amazonaws.com
+            Action:
+              - sns:Publish
+            Resource: !Ref 'Step5SnsTopic'
+      Topics:
+        - !Ref 'Step5SnsTopic'
+
+  Step5SnsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: !Sub 's3-logs-ObjectCreated'
+      Subscription:
+        - Endpoint: !GetAtt 'Step6LambdaFunction.Arn'
+          Protocol: lambda
+
+  Step6LambdaLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref 'Step6LambdaFunction'
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref 'Step5SnsTopic'
+
+  Step6LogGroupLambda:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${Step6LambdaFunction}'
+      RetentionInDays: !Ref 'CWlogsExpiredate'
+
+  Step6LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub 'arn:aws:s3:::${AWS::StackName}-*'
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !GetAtt [Step6SqsDeadLetterQueue, Arn]
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub 'arn:aws:s3:::${Step7S3bucket}/*'
+
+  Step6SqsDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+
+  Step6LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt 'Step6LambdaRole.Arn'
+      DeadLetterConfig: 
+        TargetArn: !GetAtt [Step6SqsDeadLetterQueue, Arn]
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          import json
+          import os
+          import datetime
+          import base64
+          import gzip
+          s3 = boto3.client('s3')
+          
+          def lambda_handler(event, context):
+            a = parse_s3_event(event)
+            bucket_name = a['bucket_name']
+            key = a['key']
+
+            # Process log 
+            response = s3.get_object(Bucket=bucket_name, Key=key)
+            body = gzip.decompress(response['Body'].read()).decode('utf-8','ignore').splitlines()
+
+          def parse_s3_event(event):
+            a = json.loads(event['Records'][0]['Sns']['Message'])
+            z = {}
+            z['bucket_name'] = a['Records'][0]['s3']['bucket']['name']
+            z['key'] = urllib.parse.unquote_plus(a['Records'][0]['s3']['object']['key'], encoding='utf-8')
+            return z
+
+          def process_log(data):
+            i = 0
+            c = []
+            for a in data:
+              b = parse_log(a)
+              if b is not None:
+                c.append({'Data': b})
+                i = i + 1
+              if i == 100:
+                PutRecordBatchFirehose(c)
+                i = 0
+                c = []
+            if len(c) > 0:
+              PutRecordBatchFirehose(c)
+
+          def parse_log(line):
+
+            z = {}
+            z["message"] = line['message']
+            z["timestamp"] = datetime.datetime.fromtimestamp(float(line['timestamp'])/1000).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+            #print(str(z))
+            return json.dumps(z) + "\n"
+
+          def decode_log_events(event):
+
+            e = ''
+            if 'awslogs' in event:
+              if 'data' in event['awslogs']:
+                a = event['awslogs']['data']
+                b = base64.b64decode(a)
+                c = gzip.decompress(b)
+                d = json.loads(c)
+                e = d['logEvents']
+  
+            #print(str(e))
+            return e
+
+          def PutRecordBatchFirehose(data):
+            firehose_stream_name = os.environ['firehose_stream_name']
+            r = firehose.put_record_batch(
+              DeliveryStreamName = firehose_stream_name,
+              Records = data
+            )
+            #print(str(data))
+            #print(str(r["ResponseMetadata"]["HTTPHeaders"]))
+
+      Runtime: python3.6
+      MemorySize: 128
+      Timeout: 300
+      Description: S3 exported CloudwatchLog (decode)
+      Environment:
+        Variables:
+          OutputS3bucket: !Ref 'Step7S3bucket'
+      Tags:
+        - Key: CloudformationArn
+          Value: !Ref 'AWS::StackId'
+
+  Step7S3bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - Id: AutoDelete
+            Status: Enabled
+            ExpirationInDays: !Ref 'Step7S3Expiredate'
+

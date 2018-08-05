@@ -1,0 +1,164 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Write CloudwatchLogs to Firehose(S3) via Kinesis Stream (2018-5-27)
+Parameters:
+  CWlogsExpiredate:
+    Description: Number of days to keep Cloudwatch logs
+    Type: String
+    Default: 3
+  S3Expiredate:
+    Description: Number of days to keep S3 file
+    Type: String
+    Default: 10
+
+Resources:
+  Step1LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/cw_logs/${AWS::StackName}'
+
+  Step2SubscriptionFilter:
+    Type: AWS::Logs::SubscriptionFilter
+    Properties: 
+      DestinationArn: !GetAtt 'Step3KinesisStream.Arn'
+      FilterPattern: ''
+      LogGroupName: !Ref 'Step1LogGroup'
+      RoleArn: !GetAtt 'Step2LogsRole.Arn'
+
+  Step2LogsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub 'logs.${AWS::Region}.amazonaws.com'
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kinesis:PutRecord
+                  - kinesis:PutRecords
+                Resource: !GetAtt 'Step3KinesisStream.Arn'
+
+  Step3KinesisStream:
+    Type: AWS::Kinesis::Stream
+    Properties: 
+      ShardCount: 1
+
+  Step4deliveryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ''
+            Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref 'AWS::AccountId'
+
+  Step4deliveryPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: firehose_delivery_policy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:AbortMultipartUpload
+              - s3:GetBucketLocation
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:ListBucketMultipartUploads
+              - s3:PutObject
+            Resource:
+              - !Sub 'arn:aws:s3:::${Step5S3bucket}'
+              - !Sub 'arn:aws:s3:::${Step5S3bucket}*'
+      Roles:
+        - !Ref 'Step4deliveryRole'
+
+  Step4readstreamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ''
+            Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref 'AWS::AccountId'
+
+  Step4readstreamPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: firehose_delivery_policy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - kinesis:DescribeStream
+            Resource:
+              - '*'
+          - Effect: Allow
+            Action:
+              - kinesis:GetRecords
+              - kinesis:GetShardIterator
+            Resource:
+              - !GetAtt 'Step3KinesisStream.Arn'
+      Roles:
+        - !Ref 'Step4readstreamRole'
+
+  Step4deliverystream:
+    DependsOn:
+      - Step4deliveryPolicy
+      - Step4readstreamPolicy
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !Sub 'arn:aws:s3:::${Step5S3bucket}'
+        BufferingHints:
+          IntervalInSeconds: '60'
+          SizeInMBs: '50'
+        CompressionFormat: UNCOMPRESSED
+        Prefix: firehose/cw_logs_stream_firehose/
+        RoleARN: !GetAtt 'Step4deliveryRole.Arn'
+        ProcessingConfiguration:
+          Enabled: 'false'
+      DeliveryStreamType: KinesisStreamAsSource
+      KinesisStreamSourceConfiguration:
+        KinesisStreamARN: !GetAtt 'Step3KinesisStream.Arn'
+        RoleARN: !GetAtt 'Step4readstreamRole.Arn'
+
+  Step4LogGroupFirehose:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/firehose/${Step4deliverystream}'
+      RetentionInDays: 7
+
+  Step5S3bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - Id: AutoDelete
+            Status: Enabled
+            ExpirationInDays: !Ref 'S3Expiredate'
+
+

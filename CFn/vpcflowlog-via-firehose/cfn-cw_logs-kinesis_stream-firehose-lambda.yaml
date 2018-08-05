@@ -1,0 +1,424 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudwatchLogs to Firehose(S3) via Kinesis Stream, Lambda (2018-5-27)
+Parameters:
+  CWlogsExpiredate:
+    Description: Number of days to keep Cloudwatch logs
+    Type: String
+    Default: 3
+  S3Expiredate:
+    Description: Number of days to keep S3 file
+    Type: String
+    Default: 3
+  Step8S3Expiredate:
+    Description: Number of days to keep S3 file
+    Type: String
+    Default: 10
+  Step4FirehosePrefix:
+    Description: Firehose output S3 prefix
+    Type: String
+    Default: 'firehose/cw_logs_firehose/'
+  Step7FirehosePrefix:
+    Description: Firehose output S3 prefix
+    Type: String
+    Default: 'firehose/cw_logs_kinesis_lambda/'
+
+Resources:
+  Step1LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/cw_logs/${AWS::StackName}'
+      RetentionInDays: !Ref 'CWlogsExpiredate'
+
+  Step2SubscriptionFilter:
+    Type: AWS::Logs::SubscriptionFilter
+    Properties: 
+      DestinationArn: !GetAtt 'Step3KinesisStream.Arn'
+      FilterPattern: ''
+      LogGroupName: !Ref 'Step1LogGroup'
+      RoleArn: !GetAtt 'Step2LogsRole.Arn'
+
+  Step2LogsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub 'logs.${AWS::Region}.amazonaws.com'
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kinesis:PutRecord
+                  - kinesis:PutRecords
+                Resource: !GetAtt 'Step3KinesisStream.Arn'
+
+  Step3KinesisStream:
+    Type: AWS::Kinesis::Stream
+    Properties: 
+      ShardCount: 1
+
+  Step4deliveryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ''
+            Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref 'AWS::AccountId'
+
+  Step4deliveryPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: firehose_delivery_policy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:AbortMultipartUpload
+              - s3:GetBucketLocation
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:ListBucketMultipartUploads
+              - s3:PutObject
+            Resource:
+              - !Sub 'arn:aws:s3:::${Step5S3bucket}'
+              - !Sub 'arn:aws:s3:::${Step5S3bucket}*'
+      Roles:
+        - !Ref 'Step4deliveryRole'
+
+  Step4readstreamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ''
+            Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref 'AWS::AccountId'
+
+  Step4readstreamPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: firehose_delivery_policy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - kinesis:DescribeStream
+            Resource:
+              - '*'
+          - Effect: Allow
+            Action:
+              - kinesis:GetRecords
+              - kinesis:GetShardIterator
+            Resource:
+              - !GetAtt 'Step3KinesisStream.Arn'
+      Roles:
+        - !Ref 'Step4readstreamRole'
+
+  Step4deliverystream:
+    DependsOn:
+      - Step4deliveryPolicy
+      - Step4readstreamPolicy
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !Sub 'arn:aws:s3:::${Step5S3bucket}'
+        BufferingHints:
+          IntervalInSeconds: '60'
+          SizeInMBs: '50'
+        CompressionFormat: UNCOMPRESSED
+        Prefix: !Sub '${Step7FirehosePrefix}${AWS::StackName}/'
+        RoleARN: !GetAtt 'Step4deliveryRole.Arn'
+        ProcessingConfiguration:
+          Enabled: 'false'
+      DeliveryStreamType: KinesisStreamAsSource
+      KinesisStreamSourceConfiguration:
+        KinesisStreamARN: !GetAtt 'Step3KinesisStream.Arn'
+        RoleARN: !GetAtt 'Step4readstreamRole.Arn'
+
+  Step4LogGroupFirehose:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/firehose/${Step4deliverystream}'
+      RetentionInDays: !Ref 'CWlogsExpiredate'
+
+  Step5S3bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - Id: AutoDelete
+            Status: Enabled
+            ExpirationInDays: !Ref 'S3Expiredate'
+
+  Step6EventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt 'Step3KinesisStream.Arn'
+      FunctionName: !Ref 'Step6LambdaFunction'
+      StartingPosition: LATEST
+      BatchSize: 10
+
+  Step6LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: '*'
+          - Effect: Allow
+            Action:
+            - kinesis:*
+            Resource: !GetAtt 'Step3KinesisStream.Arn'
+          - Effect: Allow
+            Action:
+            - firehose:PutRecordBatch
+            Resource: !GetAtt 'Step3KinesisStream.Arn'
+
+
+  Step6LogGroupLambda:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${Step6LambdaFunction}'
+      RetentionInDays: !Ref 'CWlogsExpiredate'
+
+  Step6LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - kinesis:DescribeStream
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - kinesis:GetRecords
+                  - kinesis:GetShardIterator
+                Resource: !GetAtt 'Step3KinesisStream.Arn'
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !GetAtt [Step6SqsDeadLetterQueue, Arn]
+              - Effect: Allow
+                Action:
+                  - firehose:PutRecordBatch
+                Resource: !GetAtt 'Step7deliverystream.Arn'
+
+  Step6SqsDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+
+  Step6LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt 'Step6LambdaRole.Arn'
+      DeadLetterConfig: 
+        TargetArn: !GetAtt [Step6SqsDeadLetterQueue, Arn]
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          import json
+          import os
+          import datetime
+          import base64
+          import gzip
+          firehose = boto3.client('firehose')
+          
+          def lambda_handler(event, context):
+            if 'Records' in event:
+              for a in event['Records']:
+                if len(a) > 0:
+                  b = decode_log_events(a)
+                  if len(b)> 0:
+                    process_log(b)
+
+          def process_log(data):
+            i = 0
+            c = []
+            for a in data:
+              b = parse_log(a)
+              if b is not None:
+                c.append({'Data': b})
+                i = i + 1
+              if i == 100:
+                PutRecordBatchFirehose(c)
+                i = 0
+                c = []
+            if len(c) > 0:
+              PutRecordBatchFirehose(c)
+
+          def parse_log(line):
+
+            z = {}
+            z["message"] = line['message']
+            z["timestamp"] = datetime.datetime.fromtimestamp(float(line['timestamp'])/1000).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+            #print(str(z))
+            return json.dumps(z) + "\n"
+
+          def decode_log_events(event):
+
+            e = ''
+            if 'kinesis' in event:
+              if 'data' in event['kinesis']:
+                a = event['kinesis']['data']
+                b = base64.b64decode(a)
+                c = gzip.decompress(b)
+                d = json.loads(c)
+                e = d['logEvents']
+  
+            #print(str(e))
+            return e
+
+          def PutRecordBatchFirehose(data):
+            firehose_stream_name = os.environ['firehose_stream_name']
+            r = firehose.put_record_batch(
+              DeliveryStreamName = firehose_stream_name,
+              Records = data
+            )
+            #print(str(data))
+            #print(str(r["ResponseMetadata"]["HTTPHeaders"]))
+
+      Runtime: python3.6
+      MemorySize: 128
+      Timeout: 300
+      Description: S3 exported CloudwatchLog (decode)
+      Environment:
+        Variables:
+          firehose_stream_name: !Ref 'Step7deliverystream'
+      Tags:
+        - Key: CloudformationArn
+          Value: !Ref 'AWS::StackId'
+
+  Step7deliveryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ''
+            Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref 'AWS::AccountId'
+
+  Step7deliveryPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: firehose_delivery_policy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:AbortMultipartUpload
+              - s3:GetBucketLocation
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:ListBucketMultipartUploads
+              - s3:PutObject
+            Resource:
+              - !Sub 'arn:aws:s3:::${Step8S3bucket}'
+              - !Sub 'arn:aws:s3:::${Step8S3bucket}*'
+      Roles:
+        - !Ref 'Step7deliveryRole'
+
+  Step7deliverystream:
+    DependsOn:
+      - Step7deliveryPolicy
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !Sub 'arn:aws:s3:::${Step8S3bucket}'
+        BufferingHints:
+          IntervalInSeconds: '60'
+          SizeInMBs: '50'
+        CompressionFormat: GZIP
+        Prefix: !Sub '${Step7FirehosePrefix}${AWS::StackName}/'
+        RoleARN: !GetAtt 'Step7deliveryRole.Arn'
+        ProcessingConfiguration:
+          Enabled: 'false'
+
+  Step7LogGroupFirehose:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/firehose/${Step7deliverystream}'
+      RetentionInDays: !Ref 'CWlogsExpiredate'
+
+  Step8S3bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - Id: AutoDelete
+            Status: Enabled
+            ExpirationInDays: !Ref 'Step8S3Expiredate'
+
+
+
+

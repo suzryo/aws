@@ -1,20 +1,23 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: vpc-flowlog to firehose (json) 20180520
+Description: CloudwatchLogs to Firehose(S3) via Lambda(2018-5-27)
 Parameters:
   CWlogsExpiredate:
     Description: Number of days to keep Cloudwatch logs
     Type: String
-    Default: 10
+    Default: 3
   S3Expiredate:
     Description: Number of days to keep S3 file
     Type: String
     Default: 10
-
+  FirehosePrefix:
+    Description: Firehose output S3 prefix
+    Type: String
+    Default: 'firehose/cwlogs_lambda_firehose/'
 Resources:
   Step1LogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/vpc-flowlog/${AWS::StackName}'
+      LogGroupName: !Sub '/cw_logs/${AWS::StackName}'
       RetentionInDays: !Ref 'CWlogsExpiredate'
 
   Step2SubscriptionFilter:
@@ -95,9 +98,6 @@ Resources:
           
           def lambda_handler(event, context):
             #print(str(event))
-            #print(str(event['awslogs']['data']))
-            #print(str(gzip.decompress(base64.b64decode(event['awslogs']['data']))['logEvents']))
-            
             a = decode_log_events(event)
             if len(a) > 0:
               process_log(a)
@@ -119,28 +119,9 @@ Resources:
 
           def parse_log(line):
 
-            a = line['message']
-            b = a.split(' ')
             z = {}
-            z["version"] = b[0]
-            z["account_id"] = b[1]
-            z["interface_id"] = b[2]
-            z["srcaddr"]    = b[3]
-            z["dstaddr"]    = b[4]
-            z["srcport"]    = b[5]
-            z["dstport"]    = b[6]
-            z["protocol"] = b[7]
-            z["packets"]    = float(b[8])
-            z["bytes"]    = float(b[9])
-            z["start"]    = int(b[10])
-            z["end"]    = int(b[11])
-            z["action"]    = b[12]
-            z["log_status"] = b[13]
-    
-            z["start_datetime"] = datetime.datetime.fromtimestamp(z["start"]).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
-            z["end_datetime"] = datetime.datetime.fromtimestamp(z["end"]).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
-
-            z["logs_timestamp"] = datetime.datetime.fromtimestamp(float(line['timestamp'])/1000).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+            z["message"] = line['message']
+            z["timestamp"] = datetime.datetime.fromtimestamp(float(line['timestamp'])/1000).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
             #print(str(z))
             return json.dumps(z) + "\n"
 
@@ -168,7 +149,7 @@ Resources:
             #print(str(r["ResponseMetadata"]["HTTPHeaders"]))
           
       Runtime: python3.6
-      MemorySize: 256
+      MemorySize: 128
       Timeout: 300
       Description: VPC-flowlog(cloudwatchlogs) to firehose
       Environment:
@@ -183,7 +164,6 @@ Resources:
     Properties:
       MessageRetentionPeriod: 1209600
 
-
   Step4deliverystream:
     DependsOn:
       - Step4deliveryPolicy
@@ -195,7 +175,7 @@ Resources:
           IntervalInSeconds: '60'
           SizeInMBs: '50'
         CompressionFormat: GZIP
-        Prefix: !Sub 'firehose/vpc_flowlog/${AWS::StackName}/'
+        Prefix: !Sub '${FirehosePrefix}${AWS::StackName}/'
         RoleARN: !GetAtt 'Step4deliveryRole.Arn'
         ProcessingConfiguration:
           Enabled: 'false'
