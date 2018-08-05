@@ -1,0 +1,326 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ec2-LaunchTemplate-one-instance
+Parameters:
+  Env:
+    Description: Choose the environment to create
+    Type: String
+    Default: development
+    AllowedValues:
+    - development
+    - staging
+    - production
+  VpcId:
+    Description: VPC ID
+    Type: AWS::EC2::VPC::Id
+    Default: vpc-10544f72
+
+  StaticIPforSSH:
+    Description: Static IP for SSH access
+    Type: String
+    Default: 106.73.25.32/32
+
+  Ec2ImageId:
+    Description: AMI ID
+    Type: String
+    Default: ami-2724cf58
+  Ec2InstanceType:
+    Description: EC2 InstanceType
+    Type: String
+    Default: t2.micro
+  Ec2InstanceKeyName:
+    Description: EC2 SSH KEY
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: SSHKeyName
+  Ec2InstanceTagName:
+    Description: EC2 Tag Name
+    Type: String
+    Default: test-ec2-20180605-one-instance
+
+  InternetGateway:
+    Description: InternetGateway
+    Type: String
+    Default: igw-e11d0c83
+
+Resources:
+  Ec2Route:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref 'Ec2RouteTable'
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref 'InternetGateway'
+  Ec2RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref 'VpcId'
+      Tags:
+      - Key: Name
+        Value: !Sub '${AWS::StackName}-Ec2RouteTable'
+  VpcEc2Subnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: ap-northeast-1a
+      CidrBlock: 172.31.128.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+      - Key: Name
+        Value: !Sub '${AWS::StackName}-VpcEc2Subnet1'
+      VpcId: !Ref 'VpcId'
+  VpcEc2Subnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: ap-northeast-1c
+      CidrBlock: 172.31.129.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+      - Key: Name
+        Value: !Sub '${AWS::StackName}-VpcEc2Subnet2'
+      VpcId: !Ref 'VpcId'
+  VpcEc2Subnet3:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: ap-northeast-1d
+      CidrBlock: 172.31.130.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+      - Key: Name
+        Value: !Sub '${AWS::StackName}-VpcEc2Subnet3'
+      VpcId: !Ref 'VpcId'
+
+  VpcEc2Subnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref 'VpcEc2Subnet1'
+      RouteTableId: !Ref 'Ec2RouteTable'
+  VpcEc2Subnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref 'VpcEc2Subnet2'
+      RouteTableId: !Ref 'Ec2RouteTable'
+  VpcEc2Subnet3RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref 'VpcEc2Subnet3'
+      RouteTableId: !Ref 'Ec2RouteTable'
+
+  Ec2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VpcId'
+      GroupDescription: allow ICMP via same VPC
+      SecurityGroupIngress:
+      - IpProtocol: icmp
+        FromPort: -1
+        ToPort: -1
+        CidrIp: 172.31.0.0/16
+  Ec2SecurityGroupSSH:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VpcId'
+      GroupDescription: allow SSH via static IP
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        CidrIp: !Ref 'StaticIPforSSH'
+  Ec2IAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+      - arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess
+      Path: /
+      Policies: !Ref 'AWS::NoValue'
+      RoleName: !Ref 'AWS::NoValue'
+  Ec2RolePolicies:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: Ec2RolePolicies
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - s3:List*
+          Resource:
+          - '*'
+        - Effect: Allow
+          Action:
+          - logs:CreateLogGroup
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+          - logs:PutRetentionPolicy
+          - logs:DescribeLogStreams
+          Resource:
+          - arn:aws:logs:*:*:*
+      Roles:
+      - !Ref 'Ec2IAMRole'
+  Ec2IAMProfile:
+    Type: AWS::IAM::InstanceProfile
+    DependsOn: Ec2IAMRole
+    Properties:
+      Path: /
+      Roles:
+      - !Ref 'Ec2IAMRole'
+
+  Ec2InstanceLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '${AWS::StackName}-oslogs'
+      RetentionInDays: 5
+
+  Ec2InstanceLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        SecurityGroupIds:
+          - !Ref 'Ec2SecurityGroup'
+          - !Ref 'Ec2SecurityGroupSSH'
+        TagSpecifications:
+        - ResourceType: instance
+          Tags:
+          - Key: Env
+            Value: !Ref 'Env'
+        - ResourceType: volume
+          Tags:
+          - Key: Env
+            Value: !Ref 'Env'
+        - ResourceType: instance
+          Tags:
+          - Key: Name
+            Value: !Ref 'AWS::StackName'
+        UserData:
+          Fn::Base64: |
+            #!/bin/bash -xe
+            date > /tmp/run.log
+            # OS update
+            yum update -y
+            # install
+            yum install jq awslogs -y
+            # AWS_DEFAULT_REGION
+            REGION=`curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone | sed -e 's/.$//g'`
+            export AWS_DEFAULT_REGION=${REGION}
+            # get cfn-stack-name
+            INSTANCEID=`curl -s http://169.254.169.254/latest/meta-data/instance-id`
+            STACKNAME=`aws ec2 describe-instances --instance-ids ${INSTANCEID} | jq .Reservations[].Instances[].Tags[] | jq -r 'select(.Key =="aws:cloudformation:stack-name").Value'`
+            # awslogs setting
+            LOGGROUPNAME="${STACKNAME}-oslogs"
+            OSLOGFILES=(/var/log/messages /var/log/cloud-init.log /var/log/cron /var/log/secure /var/log/yum.log)
+            # backup (conf)
+            mkdir -p /root/backup/awslogs
+            /bin/cp -f --backup=numbered /etc/awslogs/awscli.conf /etc/awslogs/awslogs.conf /root/backup/awslogs/
+            # awscli.conf
+            /usr/bin/cat /etc/awslogs/awscli.conf | sed "s/^region = us-east-1$/region = ${REGION}/g" | tee /etc/awslogs/awscli.conf.new
+            if ! diff -q /etc/awslogs/awscli.conf.new /etc/awslogs/awscli.conf &>/dev/null; then
+              /usr/bin/cat /etc/awslogs/awscli.conf.new > /etc/awslogs/awscli.conf
+            fi
+            # awslogs.conf
+            echo '[general]' > /etc/awslogs/awslogs.conf
+            echo 'state_file = /var/lib/awslogs/agent-state' >> /etc/awslogs/awslogs.conf
+            for LOGFILE in ${OSLOGFILES[@]}; do
+              echo -e "[${LOGFILE}] \ndatetime_format = %b %d %H:%M:%S \nfile = ${LOGFILE} \nbuffer_duration = 5000 \nlog_stream_name = {instance_id}_${LOGFILE} \ninitial_position = start_of_file \nlog_group_name = ${LOGGROUPNAME}" | tee -a /etc/awslogs/awslogs.conf
+            done
+            
+            if [ -x /usr/bin/systemctl ]; then
+              systemctl start awslogsd.service
+              systemctl status awslogsd.service
+              systemctl enable awslogsd.service
+              systemctl is-enabled awslogsd.service
+            else
+              service awslogs start
+              chkconfig awslogs on
+            fi
+
+            # /dev/xvdf mount
+            if [ -e /dev/xvdf ]; then
+              if [ ! -e /mnt/xvdf ]; then
+                mkfs.xfs /dev/xvdf
+                mkdir -p /mnt/xvdf
+                echo "/dev/xvdf /mnt/xvdf xfs defaults,noatime 1 1" >> /etc/fstab
+                mount /mnt/xvdf
+              fi
+            fi
+            # swap
+            if [ ! -f /swapfile ]; then
+              dd if=/dev/zero of=/swapfile bs=1M count=128
+              chmod 600 /swapfile
+              mkswap /swapfile
+              swapon /swapfile
+              echo "/swapfile swap swap defaults 0 0" >> /etc/fstab
+            fi            
+            
+        InstanceInitiatedShutdownBehavior: terminate
+        IamInstanceProfile:
+          Arn: !GetAtt 'Ec2IAMProfile.Arn'
+        KeyName: !Ref 'Ec2InstanceKeyName'
+        ImageId: !Ref 'Ec2ImageId'
+        Monitoring:
+          Enabled: false
+        CreditSpecification:
+          CpuCredits: standard
+        InstanceType: !Ref 'Ec2InstanceType'
+        InstanceMarketOptions:
+          SpotOptions:
+            SpotInstanceType: one-time
+            InstanceInterruptionBehavior: terminate
+          MarketType: spot
+        BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 8
+            VolumeType: gp2
+            DeleteOnTermination: true
+        - DeviceName: /dev/xvdf
+          Ebs:
+            VolumeSize: 1
+            VolumeType: gp2
+            DeleteOnTermination: true
+
+  Ec2InstanceAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    UpdatePolicy:
+      AutoScalingReplacingUpdate:
+        WillReplace: true
+    Properties:
+      VPCZoneIdentifier:
+      - !Ref 'VpcEc2Subnet1'
+      - !Ref 'VpcEc2Subnet2'
+      - !Ref 'VpcEc2Subnet3'
+      LaunchTemplate:
+        LaunchTemplateId: !Ref 'Ec2InstanceLaunchTemplate'
+        Version: !GetAtt 'Ec2InstanceLaunchTemplate.LatestVersionNumber'
+      MinSize: 1
+      MaxSize: 1
+      DesiredCapacity: 1
+
+  document: 
+    Type: AWS::SSM::Document
+    Properties: 
+      Content: 
+        schemaVersion: "1.2"
+        description: "test ssm"
+        parameters:
+          commands:
+            type: "String"
+            description: "(Required) run commands"
+        runtimeConfig:
+          aws:runShellScript:
+            properties:
+              - id: 0.aws:runShellScript
+                runCommand:
+                  - "{{ commands }}"
+                  - "pwd"
+                workingDirectory: "/var/www/"
+                timeoutSeconds: "300"
+
+
+Outputs:
+  Ec2InstanceLaunchTemplate:
+    Value: !Ref 'Ec2InstanceLaunchTemplate'

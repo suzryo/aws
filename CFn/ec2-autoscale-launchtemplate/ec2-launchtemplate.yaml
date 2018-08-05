@@ -1,0 +1,203 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ec2-LaunchTemplate
+Parameters:
+  Env:
+    Description: Choose the environment to create
+    Type: String
+    Default: development
+    AllowedValues:
+    - development
+    - staging
+    - production
+  VpcId:
+    Description: VPC ID
+    Type: AWS::EC2::VPC::Id
+    Default: vpc-deb186b8
+  VpcEc2Subnet1:
+    Description: EC2 subnet 1
+    Type: AWS::EC2::Subnet::Id
+    Default: subnet-768bf210
+  VpcEc2Subnet2:
+    Description: EC2 subnet 2
+    Type: AWS::EC2::Subnet::Id
+    Default: subnet-fa8c15b2
+  Ec2ImageId:
+    Description: AMI ID
+    Type: String
+    Default: ami-e251209a
+  Ec2InstanceType:
+    Description: EC2 InstanceType
+    Type: String
+    Default: t2.small
+  Ec2InstanceKeyName:
+    Description: EC2 SSH KEY
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: SSHKey
+  Ec2InstanceTagName:
+    Description: EC2 Tag Name
+    Type: String
+    Default: test-ec2-201805
+  Ec2AutoscaleMinSize:
+    Description: AutoScalingGroup MinSize
+    Type: String
+    Default: '1'
+  Ec2AutoscaleMaxSize:
+    Description: AutoScalingGroup MaxSize
+    Type: String
+    Default: '2'
+Resources:
+  Ec2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VpcId'
+      GroupDescription: EC2 Allow HTTP,SSH,ICMP
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 172.21.0.0/16
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        CidrIp: 172.21.0.0/16
+      - IpProtocol: icmp
+        FromPort: -1
+        ToPort: -1
+        CidrIp: 172.21.0.0/16
+  Ec2IAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+      Path: /
+      Policies: !Ref 'AWS::NoValue'
+      RoleName: !Ref 'AWS::NoValue'
+  Ec2RolePolicies:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: Ec2RolePolicies
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - s3:List*
+          Resource:
+          - '*'
+        - Effect: Allow
+          Action:
+          - logs:CreateLogGroup
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+          - logs:DescribeLogStreams
+          Resource:
+          - arn:aws:logs:*:*:*
+      Roles:
+      - !Ref 'Ec2IAMRole'
+  Ec2IAMProfile:
+    Type: AWS::IAM::InstanceProfile
+    DependsOn: Ec2IAMRole
+    Properties:
+      Path: /
+      Roles:
+      - !Ref 'Ec2IAMRole'
+  Ec2InstanceLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      InstanceType: !Ref 'Ec2InstanceType'
+      KeyName: !Ref 'Ec2InstanceKeyName'
+      ImageId: !Ref 'Ec2ImageId'
+      IamInstanceProfile: !Ref 'Ec2IAMProfile'
+      SecurityGroups:
+      - !Ref 'Ec2SecurityGroup'
+      AssociatePublicIpAddress: 'true'
+      InstanceMonitoring: 'false'
+      UserData: !Base64
+        Fn::Sub: '#!/bin/bash -xe
+          date > /tmp/run.log
+          if [ ! -f /swapfile ]; then dd if=/dev/zero of=/swapfile bs=1M count=128; chmod 600 /swapfile; mkswap /swapfile; swapon /swapfile; echo "/swapfile  swap  swap  defaults  0  0" >> /etc/fstab; fi
+          yum update -y aws-cfn-bootstrap
+          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource Ec2InstanceAutoScalingGroup --region ${AWS::Region}
+          '
+  Ec2InstanceLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      #LaunchTemplateName: String
+      LaunchTemplateData: 
+        SecurityGroupIds: 
+          - !Ref 'Ec2SecurityGroup'
+        TagSpecifications: 
+          - ResourceType: instance
+            Tags: 
+              - Key: Env
+                Value: !Ref 'Env'
+          - ResourceType: volume
+            Tags: 
+              - Key: Env
+                Value: !Ref 'Env'
+        UserData: !Base64
+          Fn::Sub: '#!/bin/bash -xe
+            date > /tmp/run.log
+            if [ ! -f /swapfile ]; then dd if=/dev/zero of=/swapfile bs=1M count=128; chmod 600 /swapfile; mkswap /swapfile; swapon /swapfile; echo "/swapfile  swap  swap  defaults  0  0" >> /etc/fstab; fi
+            yum update -y aws-cfn-bootstrap
+            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource Ec2InstanceAutoScalingGroup --region ${AWS::Region}
+            '
+        InstanceInitiatedShutdownBehavior: terminate
+        IamInstanceProfile:
+          Arn: !GetAtt 'Ec2IAMProfile.Arn'
+        KeyName: !Ref 'Ec2InstanceKeyName'
+
+        ImageId: !Ref 'Ec2ImageId'
+        Monitoring: 
+          Enabled: true
+        CreditSpecification:
+          CpuCredits: unlimited
+        InstanceType: !Ref 'Ec2InstanceType'
+        SecurityGroupIds: 
+          - !Ref 'Ec2SecurityGroup'
+        TagSpecifications: 
+          - ResourceType: instance
+            Tags: 
+              - Key: Env
+                Value: !Ref 'Env'
+          - ResourceType: volume
+            Tags: 
+              - Key: Env
+                Value: !Ref 'Env'
+        UserData: !Base64
+          Fn::Sub: '#!/bin/bash -xe
+            date > /tmp/run.log
+            if [ ! -f /swapfile ]; then dd if=/dev/zero of=/swapfile bs=1M count=128; chmod 600 /swapfile; mkswap /swapfile; swapon /swapfile; echo "/swapfile  swap  swap  defaults  0  0" >> /etc/fstab; fi
+            yum update -y aws-cfn-bootstrap
+            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource Ec2InstanceAutoScalingGroup --region ${AWS::Region}
+            '
+        InstanceInitiatedShutdownBehavior: terminate
+        IamInstanceProfile:
+          Arn: !GetAtt 'Ec2IAMProfile.Arn'
+        KeyName: !Ref 'Ec2InstanceKeyName'
+
+        ImageId: !Ref 'Ec2ImageId'
+        Monitoring: 
+          Enabled: true
+        CreditSpecification:
+          CpuCredits: unlimited
+        InstanceType: !Ref 'Ec2InstanceType'
+
+  Ec2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      LaunchTemplate: 
+        LaunchTemplateId: !Ref 'Ec2InstanceLaunchTemplate'
+        Version: !GetAtt 'Ec2InstanceLaunchTemplate.LatestVersionNumber'
+
+Outputs:
+  Ec2InstanceLaunchTemplate:
+    Value: !Ref 'Ec2InstanceLaunchTemplate'
