@@ -1,0 +1,265 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Static contents distribution using S3 and CloudFront with basic authentication by lambda@Edge
+Parameters:
+  AuthUser:
+    Description: ID for basic authentication
+    Type: String
+    Default: user2018
+  AuthPass:
+    Description: Password for basic authentication
+    Type: String
+    Default: pass2018
+  CloudFrontAliase:
+    Description: CloudFront Alternate Domain Names (CNAMEs)
+    Type: String
+    Default: none
+  SelectLambdaDeployment:
+    Description: Select blue / green deployment
+    Type: String
+    Default: blue
+    AllowedValues:
+      - blue
+      - green
+
+Conditions:
+  CloudFrontAliaseEnable: !Not [!Equals [!Ref 'CloudFrontAliase', 'none']]
+  LambdaVersionIsBlue: !Equals [!Ref 'SelectLambdaDeployment', 'blue']
+  LambdaVersionIsGreen: !Equals [!Ref 'SelectLambdaDeployment', 'green']
+
+Resources:
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-${AWS::Region}-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref 'S3Bucket'
+      PolicyDocument:
+        Statement:
+          - Action: s3:GetObject
+            Effect: Allow
+            Resource: !Sub 'arn:aws:s3:::${S3Bucket}/*'
+            Principal:
+              AWS: !Sub 'arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity
+                ${CloudFrontOriginAccessIdentity}'
+
+  S3BucketCloudFrontLog:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub 'cloudfrontlog-${AWS::StackName}-${AWS::Region}-${AWS::AccountId}'
+      LifecycleConfiguration:
+        Rules:
+        - Id: AutoDelete
+          Status: Enabled
+          ExpirationInDays: 15
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Origins:
+          - Id: S3Origin
+            DomainName: !Sub '${S3Bucket}.s3-${AWS::Region}.amazonaws.com'
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub 'origin-access-identity/cloudfront/${CloudFrontOriginAccessIdentity}'
+        Enabled: true
+        DefaultRootObject: index.html
+        Comment: !Sub '${AWS::StackName} distribution'
+        Logging:
+          IncludeCookies: 'false'
+          Bucket: !GetAtt 'S3BucketCloudFrontLog.DomainName'
+          Prefix: !Sub '${AWS::StackName}/${SelectLambdaDeployment}'
+        Aliases:
+          - !If
+            - CloudFrontAliaseEnable
+            - !Ref 'CloudFrontAliase'
+            - !Ref 'AWS::NoValue'
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ForwardedValues:
+            QueryString: true
+            Headers:
+              - If-Modified-Since
+              - If-None-Match
+              - Upgrade-Insecure-Requests
+              - User-Agent
+            Cookies:
+              Forward: all
+          ViewerProtocolPolicy: https-only
+          DefaultTTL: '0'
+          MaxTTL: '0'
+          MinTTL: '0'
+          LambdaFunctionAssociations:
+            - EventType: viewer-request
+              LambdaFunctionARN: !If
+                - LambdaVersionIsBlue
+                - !Ref 'LambdaFunctionVersionBlue'
+                - !Ref 'LambdaFunctionVersionGreen'
+        CacheBehaviors:
+          - AllowedMethods:
+              - GET
+              - HEAD
+            TargetOriginId: S3Origin
+            ForwardedValues:
+              QueryString: false
+            PathPattern: '/favicon.ico'
+            ViewerProtocolPolicy: allow-all
+            DefaultTTL: '86400'
+            MaxTTL: '86400'
+            MinTTL: '86400'
+
+  CloudFrontOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Ref 'AWS::StackName'
+
+  LogGroupLambda:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${LambdaFunction}'
+      RetentionInDays: 7
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+                - edgelambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /service-role/
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: arn:aws:logs:*:*:*
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt 'LambdaRole.Arn'
+      Code:
+        ZipFile: !Sub |
+          'use strict';
+          exports.handler = (event, context, callback) => {
+
+            // Get request and request headers
+            const request = event.Records[0].cf.request;
+            const headers = request.headers;
+
+            // Configure authentication
+            const authUser = '${AuthUser}';
+            const authPass = '${AuthPass}';
+
+            // Construct the Basic Auth string
+            const authString = 'Basic ' + new Buffer(authUser + ':' + authPass).toString('base64');
+
+            // Require Basic authentication
+            if (typeof headers.authorization == 'undefined' || headers.authorization[0].value != authString) {
+              const body = 'Unauthorized';
+              const response = {
+                status: '401',
+                statusDescription: 'Unauthorized',
+                body: body,
+                headers: {
+                  'www-authenticate': [{key: 'WWW-Authenticate', value:'Basic'}]
+                },
+              };
+              // Debug log
+              console.log("request: " + JSON.stringify(request));
+
+              callback(null, response);
+            }
+
+            // Instead of index document processing
+            var olduri = request.uri;
+            var newuri = olduri.replace(/\/$/, '\/index.html');
+            if ( olduri != newuri ) {
+              console.log("Old URI: " + olduri);
+              console.log("New URI: " + newuri);
+            }
+            request.uri = newuri;
+
+            // Continue request processing if authentication passed
+            callback(null, request);
+          };
+      Runtime: nodejs6.10
+      MemorySize: 128
+      Timeout: 1
+      Description: Basic authentication with Lambda@Edge
+      Tags:
+        - Key: CloudformationArn
+          Value: !Ref 'AWS::StackId'
+
+  LambdaFunctionVersionBlue:
+    Type: AWS::Lambda::Version
+    Condition: LambdaVersionIsBlue
+    Properties:
+      FunctionName: !Ref 'LambdaFunction'
+
+  LambdaFunctionVersionGreen:
+    Type: AWS::Lambda::Version
+    Condition: LambdaVersionIsGreen
+    Properties:
+      FunctionName: !Ref 'LambdaFunction'
+
+  IamGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: !Sub 'iam-group-s3-access-${S3Bucket}'
+      Policies:
+      - PolicyName: PolicieAllow
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - s3:List*
+            - s3:GetBucketLocation
+            Resource:
+            - arn:aws:s3:::*
+          - Effect: Allow
+            Action:
+            - s3:*
+            Resource:
+            - !Sub 'arn:aws:s3:::${S3Bucket}/*'
+          - Effect: Deny
+            Action:
+            - s3:PutBucket*
+            - s3:PutObjectAcl
+            - s3:PutObjectVersionAcl
+            Resource:
+            - arn:aws:s3:::*
+
+  IamUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub 'iam-user-s3-access-${S3Bucket}'
+      Groups:
+      - !Ref 'IamGroup'
+
+Outputs:
+  URL:
+    Value: !Sub 'https://${CloudFrontDistribution.DomainName}'
+  IamUser:
+    Value: !Ref 'IamUser'
+
