@@ -127,11 +127,3 @@ Resources:
         LaunchTemplateId: !Ref 'Ec2LaunchTemplate'
         Version: !GetAtt 'Ec2LaunchTemplate.LatestVersionNumber'
       SubnetId: !Ref 'SubnetID'
-
-  BasicSLR:
-    Type: "AWS::IAM::ServiceLinkedRole"
-    Properties:
-      AWSServiceName: "dlm.amazonaws.com"
-      Description: "Test SLR description"
-      CustomSuffix: "TestSuffix"
-
