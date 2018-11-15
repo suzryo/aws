@@ -1,0 +1,137 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Setup DLM parameter, LaunchTemplate
+# dlm-LifecyclePolicy-LaunchTemplate.yaml
+Parameters:
+  VPC:
+    Description: VPC ID
+    Type: AWS::EC2::VPC::Id
+  SubnetID:
+    Description: Subnet ID
+    Type: AWS::EC2::Subnet::Id
+  IpAllowdSsh:
+    Description: IP that allows connection EC2
+    Type: String
+    Default: 127.0.0.1/32
+  Ec2KeyName:
+    Description: EC2 SSH KEY
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: key
+  Ec2InstanceType:
+    Description: EC2 InstanceType
+    Type: String
+    Default: t3.nano
+  Ec2InstanceName:
+    Description: Ec2 Instance Name
+    Type: String
+    Default: ec2-dlm-test
+  Ec2ImageId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+  DlmTargetTag:
+    Description: DLM TargetTag
+    Type: String
+    Default: cm-dlm-dailysnapshot-enable
+Resources:
+  DlmServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - dlm.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /service-role/
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSDataLifecycleManagerServiceRole
+  DlmLifecyclePolicy:
+    Type: AWS::DLM::LifecyclePolicy
+    Properties:
+      Description: DLM Lifecycle Policy using CloudFormation
+      State: ENABLED
+      ExecutionRoleArn: !GetAtt 'DlmServiceRole.Arn'
+      PolicyDetails:
+        ResourceTypes:
+          - VOLUME
+        TargetTags:
+          - Key: !Ref 'DlmTargetTag'
+            Value: 'true'
+        Schedules:
+          - Name: Daily Snapshots
+            TagsToAdd:
+              - Key: type
+                Value: DailySnapshot
+            CreateRule:
+              Interval: 24
+              IntervalUnit: HOURS
+              Times:
+                - '16:00'
+            RetainRule:
+              Count: 7
+            CopyTags: true
+  Ec2InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VPC'
+      GroupDescription: Security group for Ec2Instance
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref 'IpAllowdSsh'
+      Tags:
+        - Key: SecurityGroupName
+          Value: !Sub '${AWS::StackName}-Ec2Instance-SecurityGroup'
+  Ec2LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub '${AWS::StackName}-Ec2LaunchTemplate'
+      LaunchTemplateData:
+        SecurityGroupIds:
+          - !Ref 'Ec2InstanceSecurityGroup'
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Ref 'Ec2InstanceName'
+          - ResourceType: volume
+            Tags:
+              - Key: Name
+                Value: !Ref 'Ec2InstanceName'
+              - Key: !Ref 'DlmTargetTag'
+                Value: 'true'
+        InstanceInitiatedShutdownBehavior: terminate
+        KeyName: !Ref 'Ec2KeyName'
+        ImageId: !Ref 'Ec2ImageId'
+        Monitoring:
+          Enabled: false
+        InstanceType: !Ref 'Ec2InstanceType'
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: 8
+              VolumeType: gp2
+              DeleteOnTermination: true
+          - DeviceName: /dev/xvdf
+            Ebs:
+              VolumeSize: 1
+              VolumeType: gp2
+              DeleteOnTermination: true
+  Ec2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref 'Ec2LaunchTemplate'
+        Version: !GetAtt 'Ec2LaunchTemplate.LatestVersionNumber'
+      SubnetId: !Ref 'SubnetID'
+
+  BasicSLR:
+    Type: "AWS::IAM::ServiceLinkedRole"
+    Properties:
+      AWSServiceName: "dlm.amazonaws.com"
+      Description: "Test SLR description"
+      CustomSuffix: "TestSuffix"
+
