@@ -15,6 +15,9 @@ Parameters:
   VpcEc2Subnet2:
     Description: EC2 subnet 2(AZ-c)
     Type: AWS::EC2::Subnet::Id
+  VpcEc2Subnet3:
+    Description: EC2 subnet 3(AZ-d)
+    Type: AWS::EC2::Subnet::Id
   Ec2ImageId:
     Description: AMI ID
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
@@ -34,7 +37,7 @@ Parameters:
   Ec2AutoscaleMinSize:
     Description: AutoScalingGroup MinSize
     Type: String
-    Default: '1'
+    Default: '0'
   Ec2AutoscaleMaxSize:
     Description: AutoScalingGroup MaxSize
     Type: String
@@ -42,7 +45,7 @@ Parameters:
   Ec2AutoscaleDesiredCapacity:
     Description: AutoScalingGroup DesiredCapacity
     Type: String
-    Default: '1'
+    Default: '0'
 Resources:
   Ec2InstanceLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
@@ -69,6 +72,7 @@ Resources:
       VPCZoneIdentifier:
       - !Ref 'VpcEc2Subnet1'
       - !Ref 'VpcEc2Subnet2'
+      - !Ref 'VpcEc2Subnet3'
       LaunchTemplate:
         LaunchTemplateId: !Ref 'Ec2InstanceLaunchTemplate'
         Version: !GetAtt 'Ec2InstanceLaunchTemplate.LatestVersionNumber'
