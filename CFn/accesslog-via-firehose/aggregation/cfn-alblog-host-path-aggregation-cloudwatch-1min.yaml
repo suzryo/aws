@@ -12,6 +12,11 @@ Parameters:
     Type: String
     Default: arn:aws:sns:us-west-2:############:##########
 
+  AggregationUrls:
+    Description: Aggregation target URI lists (Forward match)
+    Type: String
+    Default: https://www.example.com/,https://www2.example.com/
+
 Resources:
 
   Step3LambdaLambdaPermission:
@@ -98,7 +103,8 @@ Resources:
   
             a = sort_log(body) 
             b = aggregate_log_by_group(a)
-            r = put_cloudwatch(b)
+            if len(b) > 0:
+              r = put_cloudwatch(b)
             
           def parse_s3_event(event):
             a = json.loads(event['Records'][0]['Sns']['Message'])
@@ -115,20 +121,20 @@ Resources:
               c = {}
               if 'request_uri_host' in b.keys():
                 if 'timestamp' in b.keys():
-                  c["request_uri_host"] = b['request_uri_host']
-                  c["timestamp_min"] = datetime.strptime(b['timestamp'], '%Y-%m-%dT%H:%M:%S.%fZ').replace(second=0, microsecond=0)
-                  c["timestamp"] = b['timestamp']
-                  c["received_bytes"] = b['received_bytes']
-                  c["sent_bytes"] = b['sent_bytes']
 
-                  if b["request_uri_path"] == '/':
-                    c["request_uri_path_1st"] = '/'
-                  else:
-                    c["request_uri_path_1st"] = '/' + b["request_uri_path"].split('/')[1]
-  
-                  d.append(c)
+                  for e in get_aggregation_url():
+                    if (b['request_uri_scheme'] + '://' + b['request_uri_host'] + b["request_uri_path"]).startswith(e):
 
-            e = sorted(d, key=itemgetter('request_uri_host','request_uri_path_1st','timestamp_min','timestamp'))
+                      c["request_uri_host"] = b['request_uri_host']
+                      c["timestamp_min"] = datetime.strptime(b['timestamp'], '%Y-%m-%dT%H:%M:%S.%fZ').replace(second=0, microsecond=0)
+                      c["timestamp"] = b['timestamp']
+                      c["received_bytes"] = b['received_bytes']
+                      c["sent_bytes"] = b['sent_bytes']
+                      c["aggregation_url"] = e
+                    
+                      d.append(c)
+
+            e = sorted(d, key=itemgetter('request_uri_host','aggregation_url','timestamp_min','timestamp'))
             return e
 
           def aggregate_log_by_group(data):
@@ -136,7 +142,7 @@ Resources:
             a = data
             j = []
 
-            for b in groupby(a, key=itemgetter('request_uri_host','request_uri_path_1st','timestamp_min')):
+            for b in groupby(a, key=itemgetter('request_uri_host','aggregation_url','timestamp_min')):
 
               d = []
               e = []
@@ -147,7 +153,7 @@ Resources:
                 e.append(c['sent_bytes'])
                 f = c['timestamp']
                 h['request_uri_host'] = c['request_uri_host']
-                h['request_uri_path_1st'] = c['request_uri_path_1st']
+                h['aggregation_url'] = c['aggregation_url']
 
               h['received_bytes_sum'] = sum(d)
               h['received_bytes_min'] = min(d)
@@ -169,7 +175,7 @@ Resources:
     
             b = {
                   'MetricName': 'sent_bytes',
-                  'Dimensions':  [{'Name': 'request_uri_host','Value': a['request_uri_host']}, {'Name': 'request_uri_path_1st','Value': a['request_uri_path_1st']}, {'Name': 'StackName','Value': CfnStackName}],
+                  'Dimensions':  [{'Name': 'request_uri_host','Value': a['request_uri_host']}, {'Name': 'aggregation_url','Value': a['aggregation_url']}, {'Name': 'StackName','Value': CfnStackName}],
                   'Timestamp': a['timestamp'],
                   'StatisticValues': {
                     'SampleCount': a['logcount'],
@@ -182,7 +188,7 @@ Resources:
 
             c = {
                   'MetricName': 'received_bytes',
-                  'Dimensions':  [{'Name': 'request_uri_host','Value': a['request_uri_host']}, {'Name': 'request_uri_path_1st','Value': a['request_uri_path_1st']}, {'Name': 'StackName','Value': CfnStackName}],
+                  'Dimensions':  [{'Name': 'request_uri_host','Value': a['request_uri_host']}, {'Name': 'aggregation_url','Value': a['aggregation_url']}, {'Name': 'StackName','Value': CfnStackName}],
                   'Timestamp': a['timestamp'],
                   'StatisticValues': {
                     'SampleCount': a['logcount'],
@@ -207,7 +213,7 @@ Resources:
             return c
 
           def put_cloudwatch_batch(data):
-            #print(str(data))
+            print(str(data))
 
             r = cloudwatch.put_metric_data(
               Namespace = 'alb_log' ,
@@ -215,13 +221,20 @@ Resources:
             )
             return r
 
+          def get_aggregation_url():
+            a = os.environ['AggregationUrls'].split(',')
+            if len(a) > 0:
+              return a
+
       Runtime: python3.6
       MemorySize: 256
-      Timeout: 300
+      Timeout: 600
       Description: ALB log (firehose output) to cloudwatch
       Environment:
         Variables:
           CfnStackName: !Sub '${AWS::StackName}'
+          AggregationUrls: !Ref 'AggregationUrls'
+
       Tags:
         - Key: CloudformationArn
           Value: !Ref 'AWS::StackId'
