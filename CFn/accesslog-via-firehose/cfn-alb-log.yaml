@@ -258,15 +258,20 @@ Resources:
               z["ssl_cipher"] = c[1]
               z["ssl_protocol"] = c[2]
               z["target_group_arn"] = c[3]
+
             z["trace_id"] = a[5]
             z["domain_name"] = a[7]
             z["chosen_cert_arn"] = a[9]
-            z["matched_rule_priority"] = a[10]
 
             if len(a) > 10:
               d = a[10].split(' ')
               if len(d) > 1:
                 z["matched_rule_priority"] = d[1]
+                z["request_creation_time"] = d[2]
+
+              z["actions_executed"] = a[11]
+              z["redirect_url"] = a[12]
+
             if len(z["request"].split(' ')) > 2:
               z["request_method"] = z["request"].split(' ')[0]
               z["request_uri"] = z["request"].split(' ')[1]
