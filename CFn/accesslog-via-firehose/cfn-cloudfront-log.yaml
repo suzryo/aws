@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Convert CloudFront access log to JSON via Firehose (20180514)
+Description: Convert CloudFront access log to JSON via Firehose (20181130)
 Parameters:
   S3Expiredate:
     Description: Number of days to keep S3 file (S3 TTL)
@@ -13,7 +13,10 @@ Parameters:
     Description: Number of days to keep S3 file (Athena)
     Type: String
     Default: 45
-
+  FirehoseIntervalInSeconds:
+    Description: Firehose output interval
+    Type: String
+    Default: 900
 Resources:
   Step1S3Bucket:
     Type: AWS::S3::Bucket
@@ -73,7 +76,7 @@ Resources:
   Step3LogGroupLambda:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${Step3LambdaFunction}'
+      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}/${Step3LambdaFunction}'
       RetentionInDays: !Ref 'CWlogsExpiredate'
 
   Step3LambdaRole:
@@ -252,10 +255,10 @@ Resources:
       ExtendedS3DestinationConfiguration:
         BucketARN: !Sub 'arn:aws:s3:::${Step5S3Bucket}'
         BufferingHints:
-          IntervalInSeconds: '300'
-          SizeInMBs: '50'
+          IntervalInSeconds: !Ref 'FirehoseIntervalInSeconds'
+          SizeInMBs: '100'
         CompressionFormat: GZIP
-        Prefix: firehose/cloudfront_logs/
+        Prefix: !Sub 'firehose/${AWS::StackName}/'
         RoleARN: !GetAtt 'Step4deliveryRole.Arn'
         ProcessingConfiguration:
           Enabled: 'false'
@@ -299,7 +302,7 @@ Resources:
   Step4LogGroupFirehose:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/firehose/${Step4deliverystream}'
+      LogGroupName: !Sub '/aws/firehose/${AWS::StackName}/${Step4deliverystream}'
       RetentionInDays: !Ref 'CWlogsExpiredate'
 
   Step5S3Bucket:
@@ -320,7 +323,7 @@ Resources:
                   - Name: suffix
                     Value: .gz
                   - Name: prefix
-                    Value: firehose/cloudfront_logs/
+                    Value: !Sub 'firehose/${AWS::StackName}/'
             Topic: !Ref 'Step6SnsTopic'
       VersioningConfiguration:
         Status: Enabled
@@ -358,11 +361,13 @@ Resources:
       Action: lambda:InvokeFunction
       Principal: sns.amazonaws.com
       SourceArn: !Ref 'Step6SnsTopic'
+
   Step7LogGroupLambda:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub '/aws/lambda/${Step7LambdaFunction}'
+      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}/${Step7LambdaFunction}'
       RetentionInDays: 14
+
   Step7LambdaRole:
     Type: AWS::IAM::Role
     Properties:
@@ -421,22 +426,70 @@ Resources:
           import boto3
           import json
           import os
+          import gzip
+          import shutil
           import urllib.parse
           def lambda_handler(event, context):
+
             z = parse_s3_event(event)
             bucket_name = z['bucket_name']
             key = z['key']
-            new_key = get_key_with_partition(key)
-            new_bucket = os.environ['s3_bucket']
-            s3 = boto3.client('s3')
-            r = s3.copy_object(Bucket=new_bucket, Key=new_key, CopySource={'Bucket': bucket_name, 'Key': key})
+
+            data = download_file_s3(bucket_name,key)
+            bucket_name2 = os.environ['s3_bucket']
+
+            for host in get_uniq_host(data):
+              data2 = get_log_by_host(data,host)
+              key2 = get_key_with_partition(key,host)
+              upload_file_s3(data2,bucket_name2,key2)
+
           def parse_s3_event(event):
+            #print('event: ' + str(event))
             a = json.loads(event['Records'][0]['Sns']['Message'])
             z = {}
             z['bucket_name'] = a['Records'][0]['s3']['bucket']['name']
             z['key'] = urllib.parse.unquote_plus(a['Records'][0]['s3']['object']['key'], encoding='utf-8')
             return z
-          def get_key_with_partition(key):
+
+          def download_file_s3(bucket,key):
+            s3 = boto3.client('s3')
+            s3.download_file(bucket, key, '/tmp/in-file.gz')
+            c = []
+            with gzip.open('/tmp/in-file.gz', 'rt') as a:
+              for b in a:
+                c.append(json.loads(b))
+            return c
+
+          def upload_file_s3(data,bucket,key):
+
+            with open("/tmp/jsonl.tmp", "w", encoding="utf-8") as a:
+              for b in data:
+                a.write(json.dumps(b)+"\n")
+
+            with open('/tmp/jsonl.tmp', 'rb') as c:
+              with gzip.open('/tmp/jsonl.gz', 'wb', compresslevel=9) as d:
+                shutil.copyfileobj(c, d)
+
+            s3_client = boto3.client('s3')
+            s3_client.upload_file('/tmp/jsonl.gz', bucket , key )
+
+          def get_uniq_host(data):
+            b = []
+            for a in data:
+              if 'x_host_header' in a.keys():
+                b.append(a['x_host_header'])
+            c = list(set(b))
+            return c
+            
+          def get_log_by_host(data,host):
+            b = []
+            for a in data:
+              if 'x_host_header' in a.keys():
+                if (a['x_host_header'] == host):
+                  b.append(a)
+            return b
+
+          def get_key_with_partition(key,host):
             a = key.split('/')
             a.reverse()
             z = {}
@@ -445,20 +498,12 @@ Resources:
             z['day'] = a[2]
             z['month'] = a[3]
             z['year'] = a[4]
-            z['prefix'] = get_key_prefix(key)
-            f = z['prefix'] + '/' + 'dt=' + z['year'] + '-' + z['month'] + '-' + z['day'] + '-' + z['hour'] + '/' + z['filename']
+            f = '/host=' + host + '/year=' + z['year'] + '/month=' + z['month'] + '/day=' + z['day'] + '/hour='+ z['hour'] + '/' + z['filename']
             return f
-          def get_key_prefix(key):
-            a = key.split('/')
-            b = len(a) - 5
-            d = []
-            for c in a[:b]:
-              d.append(c)
-            e = '/'.join(d)
-            return e
+
       Runtime: python3.6
-      MemorySize: 128
-      Timeout: 300
+      MemorySize: 256
+      Timeout: 600
       Description: Copy the S3 file output by Firehose for Athena (with partition)
       Environment:
         Variables:
@@ -485,5 +530,4 @@ Outputs:
     Value: !Ref 'Step5S3Bucket'
   S3BucketAthena:
     Value: !Ref 'Step8S3Bucket'
-
 
