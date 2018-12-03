@@ -438,10 +438,15 @@ Resources:
             data = download_file_s3(bucket_name,key)
             bucket_name2 = os.environ['s3_bucket']
 
-            for host in get_uniq_host(data):
-              data2 = get_log_by_host(data,host)
-              key2 = get_key_with_partition(key,host)
-              upload_file_s3(data2,bucket_name2,key2)
+            l_host = get_uniq_host(data)
+            l_date = get_uniq_date(data)
+
+            for h in l_host:
+              for d in l_date:
+                data2 = get_log_by_host(data,h,d)
+                if len(data2) > 0:
+                  key2 = get_key_with_partition(key,h,d)
+                  upload_file_s3(data2,bucket_name2,key2)
 
           def parse_s3_event(event):
             #print('event: ' + str(event))
@@ -473,6 +478,9 @@ Resources:
             s3_client = boto3.client('s3')
             s3_client.upload_file('/tmp/jsonl.gz', bucket , key )
 
+            # print('bucket:' + bucket)
+            # print('key:' + key)
+
           def get_uniq_host(data):
             b = []
             for a in data:
@@ -480,24 +488,35 @@ Resources:
                 b.append(a['x_host_header'])
             c = list(set(b))
             return c
-            
-          def get_log_by_host(data,host):
+
+          def get_uniq_date(data):
             b = []
             for a in data:
-              if 'x_host_header' in a.keys():
-                if (a['x_host_header'] == host):
-                  b.append(a)
+              if 'date' in a.keys():
+                b.append(a['date'])
+            c = list(set(b))
+            return c
+
+          def get_log_by_host(data,host,date):
+            b = []
+            for a in data:
+              if 'date' in a.keys():
+                if 'x_host_header' in a.keys():
+                  if (a['date'] == date):
+                    if (a['x_host_header'] == host):
+                      b.append(a)
             return b
 
-          def get_key_with_partition(key,host):
+          def get_key_with_partition(key,host,date):
             a = key.split('/')
             a.reverse()
+            b = date.split('-')
             z = {}
             z['filename'] = a[0]
             z['hour'] = a[1]
-            z['day'] = a[2]
-            z['month'] = a[3]
-            z['year'] = a[4]
+            z['day'] = b[2]
+            z['month'] = b[1]
+            z['year'] = b[0]
             f = 'Step7/host=' + host + '/year=' + z['year'] + '/month=' + z['month'] + '/day=' + z['day'] + '/' + z['filename']
             return f
 
