@@ -545,57 +545,40 @@ Resources:
   Step9GlueDatabase:
     Type: AWS::Glue::Database
     Properties:
-      # The database is created in the Data Catalog for your account
-      CatalogId: !Ref AWS::AccountId   
+      CatalogId: !Ref 'AWS::AccountId'
       DatabaseInput:
-        # The name of the database is defined in the Parameters section above
         Name: !Sub 'cloudfront'
         Description: Glue Database for ETL processing by Athena
-        #LocationUri: !Sub 's3://${Step8S3Bucket}/Step9/Database/'
-        #Parameters: Leave AWS database parameters blank
-
-  CFNRoleFlights:
+  Step9GlueRole:
     Type: AWS::IAM::Role
     Properties:
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
       AssumeRolePolicyDocument:
-        Version: "2012-10-17"
+        Version: '2012-10-17'
         Statement:
-          -
-            Effect: "Allow"
+          - Effect: Allow
             Principal:
               Service:
-                - "glue.amazonaws.com"
+                - glue.amazonaws.com
             Action:
-              - "sts:AssumeRole"
-      Path: "/"
-      Policies:
-        -
-          PolicyName: "root"
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              -
-                Effect: "Allow"
-                Action: "*"
-                Resource: "*"
+              - sts:AssumeRole
+      Path: /
 
-  CFNCrawlerFlights:
+  Step9GlueCrawler:
     Type: AWS::Glue::Crawler
     Properties:
-      Name: !Sub 'cloudfront_crawler'
-      Role: !GetAtt CFNRoleFlights.Arn
-      #Classifiers: none, use the default classifier
-      Description: AWS Glue crawler to crawl flights data
-      #Schedule: none, use default run-on-demand
-      DatabaseName: !Ref Step9GlueDatabase
+      Name: !Sub 'crawler_for_cloudfrontlogs'
+      Role: !GetAtt 'Step9GlueRole.Arn'
+      Description: AWS Glue crawler to crawl cloudfront accesslog
+      DatabaseName: !Ref 'Step9GlueDatabase'
       Targets:
         S3Targets:
-          # Public S3 bucket with the flights data
           - Path: !Sub 's3://${Step8S3Bucket}/Step7/'
-      TablePrefix: 'cloudfront'
+      TablePrefix: cloudfront
       SchemaChangePolicy:
-        UpdateBehavior: "UPDATE_IN_DATABASE"
-        DeleteBehavior: "LOG"
+        UpdateBehavior: UPDATE_IN_DATABASE
+        DeleteBehavior: LOG
 
 Outputs:
   S3BucketSource:
