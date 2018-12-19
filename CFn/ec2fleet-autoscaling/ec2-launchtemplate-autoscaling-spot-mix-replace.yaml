@@ -1,0 +1,110 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ec2-LaunchTemplate-AutoScaling
+# ec2-launchtemplate-autoscaling-spot-mix.yaml
+Parameters:
+  VpcId:
+    Description: VPC ID
+    Type: AWS::EC2::VPC::Id
+  StaticIPforSSH:
+    Description: Static IP for SSH access
+    Type: String
+    Default: 127.0.0.1/32
+  VpcEc2Subnet1:
+    Description: EC2 subnet 1
+    Type: AWS::EC2::Subnet::Id
+  VpcEc2Subnet2:
+    Description: EC2 subnet 2
+    Type: AWS::EC2::Subnet::Id
+  Ec2ImageId:
+    Description: AMI ID
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+  Ec2InstanceKeyName:
+    Description: EC2 SSH KEY
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: SSHKey
+  Ec2LaunchtemplateName:
+    Description: EC2 Tag Name
+    Type: String
+    Default: ec2-launchtemplate-20181219
+  Ec2AutoscaleMinSize:
+    Description: AutoScalingGroup MinSize
+    Type: String
+    Default: '0'
+  Ec2AutoscaleMaxSize:
+    Description: AutoScalingGroup MaxSize
+    Type: String
+    Default: '4'
+  Ec2AutoscaleDesiredCapacity:
+    Description: AutoScalingGroup DesiredCapacity
+    Type: String
+    Default: '0'
+Resources:
+  Ec2InstanceLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Ref 'Ec2LaunchtemplateName'
+      LaunchTemplateData:
+        SecurityGroupIds:
+          - !Ref 'Ec2SecurityGroupSSH'
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Ref 'Ec2LaunchtemplateName'
+          - ResourceType: volume
+            Tags:
+              - Key: Name
+                Value: !Ref 'Ec2LaunchtemplateName'
+        InstanceInitiatedShutdownBehavior: terminate
+        KeyName: !Ref 'Ec2InstanceKeyName'
+        ImageId: !Ref 'Ec2ImageId'
+        InstanceType: t2.micro
+        UserData:
+          "Fn::Base64":
+            !Sub |
+              #!/bin/bash -xe
+              yum update -y aws-cfn-bootstrap
+              /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource Ec2InstanceAutoScalingGroup --region ${AWS::Region}
+
+  Ec2InstanceAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    UpdatePolicy:
+      AutoScalingReplacingUpdate:
+        WillReplace: true
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT10M
+      AutoScalingCreationPolicy:
+        MinSuccessfulInstancesPercent: 100
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref 'VpcEc2Subnet1'
+        - !Ref 'VpcEc2Subnet2'
+      MinSize: !Ref 'Ec2AutoscaleMinSize'
+      MaxSize: !Ref 'Ec2AutoscaleMaxSize'
+      DesiredCapacity: !Ref 'Ec2AutoscaleDesiredCapacity'
+      MixedInstancesPolicy:
+        InstancesDistribution:
+          OnDemandAllocationStrategy: prioritized
+          OnDemandBaseCapacity: 1
+          OnDemandPercentageAboveBaseCapacity: 10
+          SpotInstancePools: 2
+        LaunchTemplate:
+          LaunchTemplateSpecification:
+            LaunchTemplateId: !Ref 'Ec2InstanceLaunchTemplate'
+            Version: !GetAtt 'Ec2InstanceLaunchTemplate.LatestVersionNumber'
+          Overrides:
+            - InstanceType: t3.micro
+            - InstanceType: t2.micro
+  Ec2SecurityGroupSSH:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VpcId'
+      GroupDescription: allow SSH via static IP
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref 'StaticIPforSSH'

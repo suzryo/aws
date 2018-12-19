@@ -564,6 +564,15 @@ Resources:
             Action:
               - sts:AssumeRole
       Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:*
+                Resource: !Sub 'arn:aws:s3:::${AWS::StackName}-*'
 
   Step9GlueCrawler:
     Type: AWS::Glue::Crawler
@@ -579,6 +588,92 @@ Resources:
       SchemaChangePolicy:
         UpdateBehavior: UPDATE_IN_DATABASE
         DeleteBehavior: LOG
+
+  Step10ScheduledRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: ScheduledRule
+      ScheduleExpression: cron(40 0 * * ? *)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt 'Step11LambdaFunction.Arn'
+          Id: Step11LambdaFunction
+  Step11LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref 'Step11LambdaFunction'
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt 'Step10ScheduledRule.Arn'
+  Step11LogGroupLambda:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}/${Step11LambdaFunction}'
+      RetentionInDays: 7
+  Step11LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:*
+                Resource: !Sub 'arn:aws:s3:::${AWS::StackName}-*'
+              - Effect: Allow
+                Action:
+                  - athena:*
+                  - glue:Get*
+                Resource: '*'
+
+  Step11LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt Step11LambdaRole.Arn
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          import os
+          def lambda_handler(event, context):
+            database = os.environ['database']
+            outputlocation = os.environ['outputlocation']
+            client = boto3.client('athena')
+            sql = 'MSCK REPAIR TABLE ${AWS::StackName}step7;'
+            client.start_query_execution(
+              QueryString=sql,
+              QueryExecutionContext={'Database': database},
+              ResultConfiguration={'OutputLocation': outputlocation}
+            )
+      Runtime: python3.6
+      MemorySize: 128
+      Timeout: 180
+      Description: Update Athena partition (MSCK REPAIR TABLE)
+      Environment:
+        Variables:
+          database: cloudfront
+          outputlocation: !Sub 's3://${Step8S3Bucket}/Step11/'
+      Tags:
+        - Key: CloudformationArn
+          Value: !Ref 'AWS::StackId'
 
 Outputs:
   S3BucketSource:
