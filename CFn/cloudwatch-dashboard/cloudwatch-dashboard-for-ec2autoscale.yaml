@@ -1,0 +1,1252 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Dashboard for monitoring EC2 autoscale (lamp)
+Parameters:
+  AlbLoadBalancer:
+    Description: AlbLoadBalancer
+    Type: String
+    Default: app/aaaaaaaa/aaaaaaaa
+  AlbTargetGroup:
+    Description: ALB TargetGroup
+    Type: String
+    Default: targetgroup/bbbbbbbb/bbbbbbbb
+  Ec2AutoScalingGroupName:
+    Description: Ec2 AutoScalingGroup Name
+    Type: String
+    Default: cccc-Ec2InstanceAutoScalingGroup-ccccc
+  Ec2ImageId:
+    Description: Ec2 ImageId (AMIID)
+    Type: String
+    Default: ami-0a2de1c3b415889d2
+  Ec2InstanceType:
+    Description: Ec2 InstanceType
+    Type: String
+    Default: t3.small
+  Ec2InstanceId1:
+    Description: Ec2 InstanceId(1)
+    Type: String
+    Default: i-ddddddddddddddddd
+  Ec2InstanceId2:
+    Description: Ec2 InstanceId(2)
+    Type: String
+    Default: i-eeeeeeeeeeeeeeeee
+  Ec2InstanceId3:
+    Description: Ec2 InstanceId(3)
+    Type: String
+    Default: i-fffffffffffffffff
+  RdsDBInstanceIdentifier:
+    Description: RDS DBInstanceIdentifier
+    Type: String
+    Default: ggggggggggg
+Resources:
+  DashboardSideBySide:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${AWS::StackName}'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "text",
+              "x": 0,
+              "y": 0,
+              "width": 18,
+              "height": 1,
+              "properties": {
+                "markdown": "\n# CloudWatch Dashboards\n"
+              }
+            },
+            {
+              "type": "text",
+              "x": 0,
+              "y": 1,
+              "width": 18,
+              "height": 1,
+              "properties": {
+                "markdown": "\n## ELB (request, host count)\n"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 6,
+              "y": 2,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [
+                    "AWS/ApplicationELB",
+                    "HealthyHostCount",
+                    "TargetGroup",
+                    "${AlbTargetGroup}",
+                    "LoadBalancer",
+                    "${AlbLoadBalancer}",
+                    {
+                      "stat": "Minimum"
+                    }
+                  ],
+                  [
+                    ".",
+                    "UnHealthyHostCount",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    {
+                      "stat": "Maximum"
+                    }
+                  ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "ap-northeast-1",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 2,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [
+                    "AWS/ApplicationELB",
+                    "RequestCountPerTarget",
+                    "TargetGroup",
+                    "${AlbTargetGroup}",
+                    {
+                      "period": 60,
+                      "stat": "Sum"
+                    }
+                  ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "ap-northeast-1",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 2,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [
+                    "AWS/ApplicationELB",
+                    "RequestCount",
+                    "LoadBalancer",
+                    "${AlbLoadBalancer}",
+                    "AvailabilityZone",
+                    "ap-northeast-1a",
+                    {
+                      "period": 60,
+                      "stat": "Sum"
+                    }
+                  ],
+                  [
+                    "...",
+                    "ap-northeast-1c",
+                    {
+                      "period": 60,
+                      "stat": "Sum"
+                    }
+                  ],
+                  [
+                    "...",
+                    "ap-northeast-1d",
+                    {
+                      "period": 60,
+                      "stat": "Sum"
+                    }
+                  ]
+                ],
+                "view": "timeSeries",
+                "stacked": true,
+                "region": "ap-northeast-1",
+                "period": 300
+              }
+            },
+            {
+              "type": "text",
+              "x": 0,
+              "y": 8,
+              "width": 18,
+              "height": 1,
+              "properties": {
+                "markdown": "\n## ELB (error count)\n"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 6,
+              "y": 9,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [
+                    "AWS/ApplicationELB",
+                    "TargetConnectionErrorCount",
+                    "TargetGroup",
+                    "${AlbTargetGroup}",
+                    "LoadBalancer",
+                    "${AlbLoadBalancer}",
+                    "AvailabilityZone",
+                    "ap-northeast-1a",
+                    {
+                      "period": 60,
+                      "stat": "Sum"
+                    }
+                  ],
+                  [
+                    "...",
+                    "ap-northeast-1c",
+                    {
+                      "period": 60,
+                      "stat": "Sum"
+                    }
+                  ],
+                  [
+                    "...",
+                    "ap-northeast-1d",
+                    {
+                      "period": 60,
+                      "stat": "Sum"
+                    }
+                  ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "ap-northeast-1",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 9,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [
+                    "AWS/ApplicationELB",
+                    "HTTPCode_ELB_5XX_Count",
+                    "LoadBalancer",
+                    "${AlbLoadBalancer}",
+                    "AvailabilityZone",
+                    "ap-northeast-1a",
+                    {
+                      "period": 60,
+                      "stat": "Sum"
+                    }
+                  ],
+                  [
+                    "...",
+                    "ap-northeast-1c",
+                    {
+                      "period": 60,
+                      "stat": "Sum"
+                    }
+                  ],
+                  [
+                    "...",
+                    "ap-northeast-1d",
+                    {
+                      "period": 60,
+                      "stat": "Sum"
+                    }
+                  ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "ap-northeast-1",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 9,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [
+                    "AWS/ApplicationELB",
+                    "HTTPCode_Target_5XX_Count",
+                    "LoadBalancer",
+                    "${AlbLoadBalancer}",
+                    "AvailabilityZone",
+                    "ap-northeast-1a",
+                    {
+                      "period": 60,
+                      "stat": "Sum"
+                    }
+                  ],
+                  [
+                    "...",
+                    "ap-northeast-1c",
+                    {
+                      "period": 60,
+                      "stat": "Sum"
+                    }
+                  ],
+                  [
+                    "...",
+                    "ap-northeast-1d",
+                    {
+                      "period": 60,
+                      "stat": "Sum"
+                    }
+                  ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "ap-northeast-1",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                }
+              }
+            },
+            {
+              "type": "text",
+              "x": 0,
+              "y": 15,
+              "width": 18,
+              "height": 1,
+              "properties": {
+                "markdown": "\n## ELB (response %ile)\n"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 6,
+              "y": 16,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [
+                    "AWS/ApplicationELB",
+                    "TargetResponseTime",
+                    "TargetGroup",
+                    "${AlbTargetGroup}",
+                    "LoadBalancer",
+                    "${AlbLoadBalancer}",
+                    "AvailabilityZone",
+                    "ap-northeast-1a",
+                    {
+                      "stat": "p95",
+                      "period": 60
+                    }
+                  ],
+                  [
+                    "...",
+                    "ap-northeast-1c",
+                    {
+                      "stat": "p95",
+                      "period": 60
+                    }
+                  ],
+                  [
+                    "...",
+                    "ap-northeast-1d",
+                    {
+                      "stat": "p95",
+                      "period": 60
+                    }
+                  ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "ap-northeast-1",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                },
+                "title": "TargetResponseTime(p95)"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 16,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [
+                    "AWS/ApplicationELB",
+                    "TargetResponseTime",
+                    "TargetGroup",
+                    "${AlbTargetGroup}",
+                    "LoadBalancer",
+                    "${AlbLoadBalancer}",
+                    "AvailabilityZone",
+                    "ap-northeast-1a",
+                    {
+                      "stat": "p90",
+                      "period": 60
+                    }
+                  ],
+                  [
+                    "...",
+                    "ap-northeast-1c",
+                    {
+                      "stat": "p90",
+                      "period": 60
+                    }
+                  ],
+                  [
+                    "...",
+                    "ap-northeast-1d",
+                    {
+                      "stat": "p90",
+                      "period": 60
+                    }
+                  ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "ap-northeast-1",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                },
+                "title": "TargetResponseTime(p90)"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 16,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [
+                    "AWS/ApplicationELB",
+                    "TargetResponseTime",
+                    "TargetGroup",
+                    "${AlbTargetGroup}",
+                    "LoadBalancer",
+                    "${AlbLoadBalancer}",
+                    "AvailabilityZone",
+                    "ap-northeast-1a",
+                    {
+                      "stat": "p99",
+                      "period": 60
+                    }
+                  ],
+                  [
+                    "...",
+                    "ap-northeast-1c",
+                    {
+                      "stat": "p99",
+                      "period": 60
+                    }
+                  ],
+                  [
+                    "...",
+                    "ap-northeast-1d",
+                    {
+                      "stat": "p99",
+                      "period": 60
+                    }
+                  ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "ap-northeast-1",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                },
+                "title": "TargetResponseTime(p99)"
+              }
+            },
+            {
+              "type": "text",
+              "x": 0,
+              "y": 22,
+              "width": 18,
+              "height": 1,
+              "properties": {
+                "markdown": "\n## EC2 (Autoscalling)\n"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 23,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [
+                    "AWS/EC2",
+                    "CPUUtilization",
+                    "AutoScalingGroupName",
+                    "${Ec2AutoScalingGroupName}",
+                    {
+                      "period": 300,
+                      "stat": "Sum"
+                    }
+                  ],
+                  [
+                    ".",
+                    "NetworkOut",
+                    ".",
+                    ".",
+                    {
+                      "period": 300,
+                      "stat": "Sum",
+                      "yAxis": "right"
+                    }
+                  ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "ap-northeast-1",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  },
+                  "right": {
+                    "min": 0
+                  }
+                },
+                "title": "CPUUtilization, NetworkOut (sum)"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 6,
+              "y": 23,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [
+                    "AWS/EC2",
+                    "CPUUtilization",
+                    "AutoScalingGroupName",
+                    "${Ec2AutoScalingGroupName}",
+                    {
+                      "period": 300
+                    }
+                  ],
+                  [
+                    "...",
+                    {
+                      "period": 300,
+                      "stat": "Maximum",
+                      "yAxis": "left"
+                    }
+                  ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "ap-northeast-1",
+                "period": 300,
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  },
+                  "right": {
+                    "min": 0
+                  }
+                },
+                "title": "CPUUtilization"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 23,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [
+                    "AWS/EC2",
+                    "NetworkIn",
+                    "AutoScalingGroupName",
+                    "${Ec2AutoScalingGroupName}",
+                    {
+                      "period": 300
+                    }
+                  ],
+                  [
+                    ".",
+                    "NetworkOut",
+                    ".",
+                    ".",
+                    {
+                      "period": 300
+                    }
+                  ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "ap-northeast-1",
+                "period": 300,
+                "title": "NetworkIn, NetworkOut"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 29,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [
+                    "AWS/EC2",
+                    "CPUCreditUsage",
+                    "AutoScalingGroupName",
+                    "${Ec2AutoScalingGroupName}"
+                  ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "ap-northeast-1",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 29,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [
+                    "AWS/EC2",
+                    "CPUCreditBalance",
+                    "AutoScalingGroupName",
+                    "${Ec2AutoScalingGroupName}"
+                  ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "ap-northeast-1",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 6,
+              "y": 29,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [
+                    "AWS/EC2",
+                    "CPUSurplusCreditBalance",
+                    "AutoScalingGroupName",
+                    "${Ec2AutoScalingGroupName}"
+                  ],
+                  [
+                    ".",
+                    "CPUSurplusCreditsCharged",
+                    ".",
+                    "."
+                  ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "ap-northeast-1",
+                "period": 300
+              }
+            },
+            {
+              "type": "text",
+              "x": 0,
+              "y": 35,
+              "width": 18,
+              "height": 1,
+              "properties": {
+                "markdown": "\n## EC2 (custom metrics)\n"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 6,
+              "y": 36,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [
+                    "CWAgent",
+                    "mem_used_percent",
+                    "InstanceId",
+                    "${Ec2InstanceId1}",
+                    "AutoScalingGroupName",
+                    "${Ec2AutoScalingGroupName}",
+                    "ImageId",
+                    "${Ec2ImageId}",
+                    "InstanceType",
+                    "${Ec2InstanceType}",
+                    {
+                      "period": 60
+                    }
+                  ],
+                  [
+                    "...",
+                    "${Ec2InstanceId2}",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    {
+                      "period": 60
+                    }
+                  ],
+                  [
+                    "...",
+                    "${Ec2InstanceId3}",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    {
+                      "period": 60
+                    }
+                  ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "ap-northeast-1",
+                "title": "mem_used_percent",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 36,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [
+                    "CWAgent",
+                    "cpu_usage_idle",
+                    "InstanceId",
+                    "${Ec2InstanceId1}",
+                    "AutoScalingGroupName",
+                    "${Ec2AutoScalingGroupName}",
+                    "ImageId",
+                    "${Ec2ImageId}",
+                    "cpu",
+                    "cpu-total",
+                    "InstanceType",
+                    "${Ec2InstanceType}",
+                    {
+                      "stat": "Minimum",
+                      "period": 60
+                    }
+                  ],
+                  [
+                    "...",
+                    "${Ec2InstanceId2}",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    {
+                      "stat": "Minimum",
+                      "period": 60
+                    }
+                  ],
+                  [
+                    "...",
+                    "${Ec2InstanceId3}",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    {
+                      "stat": "Minimum",
+                      "period": 60
+                    }
+                  ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "ap-northeast-1",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 36,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [
+                    "CWAgent",
+                    "swap_used_percent",
+                    "InstanceId",
+                    "${Ec2InstanceId1}",
+                    "AutoScalingGroupName",
+                    "${Ec2AutoScalingGroupName}",
+                    "ImageId",
+                    "${Ec2ImageId}",
+                    "InstanceType",
+                    "${Ec2InstanceType}"
+                  ],
+                  [
+                    "...",
+                    "${Ec2InstanceId2}",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    "."
+                  ],
+                  [
+                    "...",
+                    "${Ec2InstanceId3}",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    "."
+                  ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "ap-northeast-1",
+                "title": "swap_used_percent",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 42,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [
+                    "CWAgent",
+                    "disk_used_percent",
+                    "path",
+                    "/",
+                    "InstanceId",
+                    "${Ec2InstanceId1}",
+                    "AutoScalingGroupName",
+                    "${Ec2AutoScalingGroupName}",
+                    "ImageId",
+                    "${Ec2ImageId}",
+                    "InstanceType",
+                    "${Ec2InstanceType}",
+                    "device",
+                    "nvme0n1p1",
+                    "fstype",
+                    "ext4"
+                  ],
+                  [
+                    "...",
+                    "${Ec2InstanceId2}",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    "."
+                  ],
+                  [
+                    "...",
+                    "${Ec2InstanceId3}",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    "."
+                  ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "ap-northeast-1",
+                "title": "disk_used_percent",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 6,
+              "y": 42,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [
+                    "CWAgent",
+                    "netstat_tcp_established",
+                    "InstanceId",
+                    "${Ec2InstanceId1}",
+                    "AutoScalingGroupName",
+                    "${Ec2AutoScalingGroupName}",
+                    "ImageId",
+                    "${Ec2ImageId}",
+                    "InstanceType",
+                    "${Ec2InstanceType}",
+                    {
+                      "period": 60,
+                      "stat": "Maximum"
+                    }
+                  ],
+                  [
+                    "...",
+                    "${Ec2InstanceId2}",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    {
+                      "period": 60,
+                      "stat": "Maximum"
+                    }
+                  ],
+                  [
+                    "...",
+                    "${Ec2InstanceId3}",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    {
+                      "period": 60,
+                      "stat": "Maximum"
+                    }
+                  ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "ap-northeast-1",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 42,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [
+                    "CWAgent",
+                    "processes_total",
+                    "InstanceId",
+                    "${Ec2InstanceId1}",
+                    "AutoScalingGroupName",
+                    "${Ec2AutoScalingGroupName}",
+                    "ImageId",
+                    "${Ec2ImageId}",
+                    "InstanceType",
+                    "${Ec2InstanceType}",
+                    {
+                      "stat": "Maximum",
+                      "period": 60
+                    }
+                  ],
+                  [
+                    "...",
+                    "${Ec2InstanceId2}",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    {
+                      "stat": "Maximum",
+                      "period": 60
+                    }
+                  ],
+                  [
+                    "...",
+                    "${Ec2InstanceId3}",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    ".",
+                    {
+                      "stat": "Maximum",
+                      "period": 60
+                    }
+                  ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "ap-northeast-1",
+                "period": 300
+              }
+            },
+            {
+              "type": "text",
+              "x": 0,
+              "y": 48,
+              "width": 18,
+              "height": 1,
+              "properties": {
+                "markdown": "\n## RDS (Aurora)\n"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 6,
+              "y": 49,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [
+                    "AWS/RDS",
+                    "SelectLatency",
+                    "DBInstanceIdentifier",
+                    "${RdsDBInstanceIdentifier}",
+                    {
+                      "period": 60,
+                      "stat": "Maximum"
+                    }
+                  ],
+                  [
+                    ".",
+                    "UpdateLatency",
+                    ".",
+                    ".",
+                    {
+                      "period": 60,
+                      "stat": "Maximum",
+                      "yAxis": "right"
+                    }
+                  ],
+                  [
+                    ".",
+                    "InsertLatency",
+                    ".",
+                    ".",
+                    {
+                      "period": 60,
+                      "stat": "Maximum",
+                      "yAxis": "right"
+                    }
+                  ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "ap-northeast-1",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 49,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [
+                    "AWS/RDS",
+                    "DatabaseConnections",
+                    "DBInstanceIdentifier",
+                    "${RdsDBInstanceIdentifier}",
+                    {
+                      "period": 60,
+                      "stat": "Maximum"
+                    }
+                  ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "ap-northeast-1",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 49,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [
+                    "AWS/RDS",
+                    "DBLoad",
+                    "DBInstanceIdentifier",
+                    "${RdsDBInstanceIdentifier}",
+                    {
+                      "period": 300,
+                      "stat": "Average",
+                      "yAxis": "left"
+                    }
+                  ],
+                  [
+                    "...",
+                    {
+                      "period": 300,
+                      "stat": "Maximum",
+                      "yAxis": "left"
+                    }
+                  ],
+                  [
+                    "...",
+                    {
+                      "period": 300,
+                      "stat": "p95",
+                      "yAxis": "left"
+                    }
+                  ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "ap-northeast-1",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 55,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [
+                    "AWS/RDS",
+                    "FreeLocalStorage",
+                    "DBInstanceIdentifier",
+                    "${RdsDBInstanceIdentifier}",
+                    {
+                      "period": 60,
+                      "stat": "Maximum"
+                    }
+                  ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "ap-northeast-1",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 55,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [
+                    "AWS/RDS",
+                    "CPUUtilization",
+                    "DBInstanceIdentifier",
+                    "${RdsDBInstanceIdentifier}",
+                    {
+                      "period": 60,
+                      "stat": "Maximum"
+                    }
+                  ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "ap-northeast-1",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 6,
+              "y": 55,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [
+                    "AWS/RDS",
+                    "FreeableMemory",
+                    "DBInstanceIdentifier",
+                    "${RdsDBInstanceIdentifier}",
+                    {
+                      "period": 60,
+                      "stat": "Maximum",
+                      "yAxis": "left"
+                    }
+                  ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "ap-northeast-1",
+                "period": 300
+              }
+            }
+          ]
+        }
