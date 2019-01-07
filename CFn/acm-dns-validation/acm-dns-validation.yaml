@@ -1,0 +1,25 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ACM DNS Validation template (20180828)
+Parameters:
+  DomainName:
+    Description: FQDN of the certificate
+    Type: String
+    Default: ''
+  ValidationDomain:
+    Description: The domain to which validation
+    Type: String
+    Default: ''
+Resources:
+  ACMCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Sub '${DomainName}'
+      SubjectAlternativeNames:
+        - !Ref 'DomainName'
+      DomainValidationOptions:
+        - DomainName: !Sub '${DomainName}'
+          ValidationDomain: !Ref 'ValidationDomain'
+      Tags:
+        - Key: name
+          Value: !Sub '${DomainName}-20180828'
+      ValidationMethod: DNS
