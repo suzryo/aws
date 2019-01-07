@@ -1,0 +1,59 @@
+Description: "S3(web) access roll for Cyberduck"
+# iam-s3-access-role-cyberduck.yaml
+Parameters:
+  S3BucketName:
+    Description: S3 Bucket Name
+    Type: String
+    Default: tests3bucket-for-cyberduck
+  S3accessRoleName:
+    Description: S3 Bucket Name
+    Type: String
+    Default: s3-access-role-cyberduck
+  SwitchAccountId:
+    Description: Switch account ID
+    Type: String
+    Default: 123456789012
+Resources:
+  IamRoleS3access:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${SwitchAccountId}:root'
+            Action: sts:AssumeRole
+            Condition:
+              Bool:
+                aws:MultiFactorAuthPresent: 'true'
+      Policies:
+        - PolicyName: S3accessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListAllMyBuckets
+                  - s3:GetBucketLocation
+                Resource:
+                  - arn:aws:s3:::*
+              - Effect: Allow
+                Action:
+                  - s3:*
+                Resource:
+                  - !Sub 'arn:aws:s3:::${S3BucketName}/*'
+                  - !Sub 'arn:aws:s3:::${S3BucketName}'
+              - Effect: Deny
+                Action:
+                  - s3:PutBucket*
+                  - s3:PutObjectAcl
+                  - s3:PutObjectVersionAcl
+                Resource:
+                  - arn:aws:s3:::*
+      RoleName: !Ref 'S3accessRoleName'
+Outputs:
+  IamRoleS3accessArn:
+    Value: !GetAtt IamRoleS3access.Arn
+
+
