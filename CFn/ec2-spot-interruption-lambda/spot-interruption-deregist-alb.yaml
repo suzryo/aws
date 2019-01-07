@@ -1,0 +1,151 @@
+Description: Deregister-targets (alb) when spot instance interruption
+# spot-interruption-deregist-alb.yaml
+
+Resources:
+  EventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: EventRule
+      EventPattern:
+        detail-type:
+        - EC2 Spot Instance Interruption Warning
+        source:
+        - aws.ec2
+      State: ENABLED
+      Targets:
+      - Arn: !Ref 'SnsTopic'
+        Id: EventRuleAdminswich
+      Targets:
+      - Arn: !GetAtt 'LambdaFunction.Arn'
+        Id: LambdaFunction
+
+  LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref 'LambdaFunction'
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt 'EventRule.Arn'
+
+  LogGroupLambda:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${LambdaFunction}'
+      RetentionInDays: 14
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - elasticloadbalancing:DescribeLoadBalancers
+                  - elasticloadbalancing:DescribeTags
+                  - elasticloadbalancing:DescribeTargetHealth
+                  - elasticloadbalancing:DescribeTargetGroups
+                  - elasticloadbalancing:DeregisterTargets
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:DescribeTags
+                  - autoscaling:DescribeAutoScalingGroups
+                Resource: '*'
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt 'LambdaRole.Arn'
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          
+          def lambda_handler(event, context):
+            instance_id = event['detail']['instance-id']
+
+            asg_name = get_asg_name(instance_id)
+            if len(asg_name) > 0:
+              targetgroup_arns = get_asg_targetgrouparn(asg_name)
+              for targetgroup_arn in targetgroup_arns:
+                target_ids = describe_target_health(targetgroup_arn,instance_id)
+                if len(target_ids) > 0:
+                  deregister_targets(targetgroup_arn,target_ids)
+
+          def get_asg_name(instance_id):
+            client = boto3.client('ec2')
+            response = client.describe_instances(Filters=[{'Name':'instance-id', 'Values':[instance_id]}])
+            StateName = response['Reservations'][0]['Instances'][0]['State']['Name']
+
+            asg_name = ''
+            if StateName == 'running':
+              for tag in response['Reservations'][0]['Instances'][0]['Tags']:
+                if tag['Key'] == 'aws:autoscaling:groupName':
+                  asg_name = tag['Value']
+
+            LaunchTime = response['Reservations'][0]['Instances'][0]['LaunchTime']
+            AvailabilityZone = response['Reservations'][0]['Instances'][0]['Placement']['AvailabilityZone']
+            InstanceType = response['Reservations'][0]['Instances'][0]['InstanceType']
+            print('instance-id: ' + str(instance_id))
+            print('InstanceType: ' + str(InstanceType))
+            print('AvailabilityZone: ' + str(AvailabilityZone))
+            print('LaunchTime: ' + str(LaunchTime))
+
+            print('asg_name: ' + asg_name)
+            return asg_name
+
+          def get_asg_targetgrouparn(asg_name):
+            client = boto3.client('autoscaling')
+            response = client.describe_auto_scaling_groups(AutoScalingGroupNames=[asg_name])
+            targetgroup_arns = response['AutoScalingGroups'][0]['TargetGroupARNs']
+            print('targetgroup_arns:' + str(targetgroup_arns))
+            return targetgroup_arns
+
+          def describe_target_health(targetgroup_arn,instance_id):
+            client = boto3.client('elbv2')
+            response = client.describe_target_health(
+              TargetGroupArn = targetgroup_arn
+            )
+            target_ids = []
+            for a in response['TargetHealthDescriptions']:
+              if a['Target']['Id'] == instance_id:
+                if a['TargetHealth']['State'] == 'healthy':
+                  target_ids.append(a['Target'])
+            print('target_ids:' + str(target_ids))
+            return target_ids
+
+          def deregister_targets(targetgroup_arn,target_ids):
+            client = boto3.client('elbv2')
+            response = client.deregister_targets(
+              TargetGroupArn = targetgroup_arn,
+              Targets = target_ids,
+            )
+
+      Runtime: python3.6
+      MemorySize: 128
+      Timeout: 300
+      Description: Deregister-targets (alb) when spot instance interruption
+      Tags:
+        - Key: CloudformationArn
+          Value: !Ref 'AWS::StackId'
+
