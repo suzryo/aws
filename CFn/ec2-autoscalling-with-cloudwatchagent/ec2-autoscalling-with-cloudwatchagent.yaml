@@ -1,0 +1,269 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: EC2 AutoScaling with SSM and Cloudwatch Agent (AL2)
+# ec2-autoscalling-with-cloudwatchagent.yaml
+Parameters:
+  VPC:
+    Description: VPC ID
+    Type: AWS::EC2::VPC::Id
+  SubnetIDs:
+    Description: Subnet IDs
+    Type: List<AWS::EC2::Subnet::Id>
+  IpAllowdSsh:
+    Description: IP address that allows SSH connection
+    Type: String
+    Default: 127.0.0.1/32
+  Ec2KeyName:
+    Description: EC2 SSH KEY
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: key
+  Ec2InstanceType:
+    Description: EC2 InstanceType
+    Type: String
+    Default: t3.nano
+  Ec2InstanceName:
+    Description: Ec2 Instance Name
+    Type: String
+    Default: ec2-cloudwatch-agent-test
+  Ec2AutoscaleMinSize:
+    Description: AutoScalingGroup MinSize
+    Type: String
+    Default: '1'
+  Ec2AutoscaleMaxSize:
+    Description: AutoScalingGroup MaxSize
+    Type: String
+    Default: '2'
+  Ec2AutoscaleDesiredCapacity:
+    Description: AutoScalingGroup DesiredCapacity
+    Type: String
+    Default: '1'
+  Ec2ImageId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+  LogGroupExpiredate:
+    Description: Number of days to keep Cloudwatch logs
+    Type: String
+    Default: 3
+Resources:
+  Ec2InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VPC'
+      GroupDescription: Security group for Ec2Instance
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref 'IpAllowdSsh'
+      Tags:
+        - Key: SecurityGroupName
+          Value: !Sub '${AWS::StackName}-Ec2Instance-SecurityGroup'
+  Ec2InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess
+        - arn:aws:iam::aws:policy/AWSCloudFormationReadOnlyAccess
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+  Ec2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref 'Ec2InstanceRole'
+  Ec2LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub '${AWS::StackName}-LaunchTemplate-${Ec2InstanceName}'
+      LaunchTemplateData:
+        SecurityGroupIds:
+          - !Ref 'Ec2InstanceSecurityGroup'
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Ref 'Ec2InstanceName'
+          - ResourceType: volume
+            Tags:
+              - Key: Name
+                Value: !Ref 'Ec2InstanceName'
+        InstanceInitiatedShutdownBehavior: terminate
+        IamInstanceProfile:
+          Arn: !GetAtt 'Ec2InstanceProfile.Arn'
+        KeyName: !Ref 'Ec2KeyName'
+        ImageId: !Ref 'Ec2ImageId'
+        Monitoring:
+          Enabled: true
+        InstanceType: !Ref 'Ec2InstanceType'
+        UserData: !Base64
+          Fn::Sub: |
+            #!/bin/bash -xe
+            yum update -y
+            if [ ! -f /swapfile ]; then dd if=/dev/zero of=/swapfile bs=1M count=256; chmod 600 /swapfile; mkswap /swapfile; swapon /swapfile; fi
+            yum install -y httpd
+            systemctl restart httpd.service
+            rpm -Uvh https://s3.amazonaws.com/amazoncloudwatch-agent/amazon_linux/amd64/latest/amazon-cloudwatch-agent.rpm
+            /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a stop
+            /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c ssm:${CloudWatchAgentParameter} -s
+            yum update -y aws-cfn-bootstrap
+            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource Ec2AutoScalingGroup --region ${AWS::Region}
+  Ec2AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MaxBatchSize: 3
+        MinInstancesInService: 1
+        PauseTime: PT5M
+        SuspendProcesses:
+          - ScheduledActions
+          - HealthCheck
+          - ReplaceUnhealthy
+          - AZRebalance
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT10M
+      AutoScalingCreationPolicy:
+        MinSuccessfulInstancesPercent: 60
+    Properties:
+      VPCZoneIdentifier: !Ref 'SubnetIDs'
+      LaunchTemplate:
+        LaunchTemplateId: !Ref 'Ec2LaunchTemplate'
+        Version: !GetAtt 'Ec2LaunchTemplate.LatestVersionNumber'
+      MinSize: !Ref 'Ec2AutoscaleMinSize'
+      MaxSize: !Ref 'Ec2AutoscaleMaxSize'
+      MetricsCollection:
+        - Granularity: 1Minute
+      DesiredCapacity: !Ref 'Ec2AutoscaleDesiredCapacity'
+      HealthCheckType: EC2
+      HealthCheckGracePeriod: '1500'
+      Cooldown: '300'
+      TerminationPolicies:
+        - OldestInstance
+  CloudWatchAgentParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub 'AmazonCloudWatch-${AWS::StackName}-${Ec2InstanceTagName}-cloudwatch-agent-config'
+      Type: String
+      Value: !Sub |
+        {
+          "logs": {
+            "logs_collected": {
+              "files": {
+                "collect_list": [
+                  {
+                    "file_path": "/var/log/messages",
+                    "log_group_name": "${LogGroupMessages}"
+                  },
+                  {
+                    "file_path": "/var/log/secure",
+                    "log_group_name": "${LogGroupSecure}"
+                  },
+                  {
+                    "file_path": "/var/log/cloud-init-output.log",
+                    "log_group_name": "${LogGroupCloudinitoutput}"
+                  },
+                  {
+                    "file_path": "/var/log/amazon/ssm/amazon-ssm-agent.log",
+                    "log_group_name": "${LogGroupSsmAmzonssmagent}"
+                  },
+                  {
+                    "file_path": "/var/log/httpd/error_log",
+                    "log_group_name": "${LogGroupHttpderrorlog}"
+                  }
+                ]
+              }
+            }
+          },
+          "metrics": {
+            "append_dimensions": {
+              "AutoScalingGroupName": "${!aws:AutoScalingGroupName}",
+              "ImageId": "${!aws:ImageId}",
+              "InstanceId": "${!aws:InstanceId}",
+              "InstanceType": "${!aws:InstanceType}"
+            },
+            "metrics_collected": {
+              "mem": {
+                "measurement": [
+                  "mem_used_percent"
+                ],
+                "metrics_collection_interval": 60
+              },
+              "cpu": {
+                "measurement": [
+                  {"name": "cpu_usage_idle", "unit": "Percent"},
+                  {"name": "cpu_usage_nice", "unit": "Percent"}
+                ],
+                "metrics_collection_interval": 60
+              },
+              "processes": {
+                "measurement": [
+                  "total"
+                ],
+                "metrics_collection_interval": 60
+              },
+              "netstat": {
+                "measurement": [
+                  "tcp_established"
+                ],
+                "metrics_collection_interval": 60
+              },
+              "disk": {
+                "measurement": [
+                  "used_percent"
+                ],
+                "resources": [
+                  "/"
+                ],
+                "ignore_file_system_types": [
+                  "xfs"
+                ],
+                "metrics_collection_interval": 300
+              },
+              "swap": {
+                "measurement": [
+                  "swap_used_percent"
+                ],
+                "metrics_collection_interval": 300
+              }
+            }
+          }
+        } 
+      Description: !Sub 'CloudWatch agent config for /${AWS::StackName}'
+  LogGroupMessages:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/${AWS::StackName}/cloudwatch-agent/messages'
+      RetentionInDays: !Ref 'LogGroupExpiredate'
+  LogGroupSecure:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/${AWS::StackName}/cloudwatch-agent/secure'
+      RetentionInDays: !Ref 'LogGroupExpiredate'
+  LogGroupCloudinitoutput:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/${AWS::StackName}/cloudwatch-agent/cloud-init-output.log'
+      RetentionInDays: !Ref 'LogGroupExpiredate'
+  LogGroupHttpderrorlog:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/${AWS::StackName}/cloudwatch-agent/httpd/error_log'
+      RetentionInDays: !Ref 'LogGroupExpiredate'
+  LogGroupSsmAmzonssmagent:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/${AWS::StackName}/ssm/amazon-ssm-agent.log'
+      RetentionInDays: !Ref 'LogGroupExpiredate'
+
+

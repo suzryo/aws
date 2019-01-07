@@ -1,0 +1,72 @@
+{
+    "logs": {
+      "logs_collected": {
+        "files": {
+          "collect_list": [
+            {
+              "file_path": "/var/log/messages",
+              "log_group_name": "/as2/cloudwatch-agent/messages"
+            },
+            {
+              "file_path": "/var/log/secure",
+              "log_group_name": "/as2/cloudwatch-agent/secure"
+            },
+            {
+              "file_path": "/var/log/cloud-init-output.log",
+              "log_group_name": "/as2/cloudwatch-agent/cloud-init-output.log"
+            },
+            {
+              "file_path": "/var/log/httpd/error.log",
+              "log_group_name": "/as2/cloudwatch-agent/httpd/error.log"
+            }
+          ]
+        }
+      }
+    },
+    "metrics": {
+      "append_dimensions": {
+        "AutoScalingGroupName": "${aws:AutoScalingGroupName}",
+        "ImageId": "${aws:ImageId}",
+        "InstanceId": "${aws:InstanceId}",
+        "InstanceType": "${aws:InstanceType}"
+      },
+      "metrics_collected": {
+        "mem": {
+          "measurement": [
+            "mem_used_percent"
+          ],
+          "metrics_collection_interval": 60
+        },
+        "cpu": {
+          "measurement": [
+            "time_idle"
+          ],
+          "metrics_collection_interval": 60
+        },
+        "processes": {
+          "measurement": [
+            "total"
+          ],
+          "metrics_collection_interval": 60
+        },
+        "disk": {
+          "measurement": [
+            "used_percent"
+          ],
+          "resources": [
+            "/"
+          ],
+          "ignore_file_system_types": [
+            "xfs"
+          ],
+          "metrics_collection_interval": 300
+        },
+        "swap": {
+          "measurement": [
+            "swap_used_percent"
+          ],
+          "metrics_collection_interval": 300
+        }
+      }
+    }
+  }
