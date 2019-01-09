@@ -1,0 +1,122 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: RDS Aurora Serverless MySQL
+Parameters:
+  VpcId:
+    Description: VPC ID
+    Type: AWS::EC2::VPC::Id
+  VpcRdsSubnetId1:
+    Description: RDS VPC subnet 1
+    Type: AWS::EC2::Subnet::Id
+  VpcRdsSubnetId2:
+    Description: RDS VPC subnet 2
+    Type: AWS::EC2::Subnet::Id
+  VpcRdsSubnetId3:
+    Description: RDS VPC subnet 3
+    Type: AWS::EC2::Subnet::Id
+  VpcApSubnet:
+    Description: AP VPC subnet
+    Type: String
+    Default: 172.31.0.0/16
+  RdsDBClusterIdentifier:
+    Description: DBClusterIdentifier
+    Type: String
+    Default: sstest
+    AllowedPattern: ^[a-zA-Z0-9]*$
+    MinLength: 1
+    MaxLength: 60
+  RdsDbMasterUsername:
+    Description: RdsDbMasterUsername
+    Type: String
+    Default: hogehoge
+  RdsDbMasterUserPassword:
+    Description: RdsDbMasterUserPassword
+    Type: String
+    Default: fugafuga
+    NoEcho: true
+  Env:
+    Description: Choose the environment to create
+    Type: String
+    Default: development
+    AllowedValues:
+      - development
+      - staging
+      - production
+Resources:
+  RdsDbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Database subnets for RDS
+      SubnetIds:
+        - !Ref 'VpcRdsSubnetId1'
+        - !Ref 'VpcRdsSubnetId2'
+        - !Ref 'VpcRdsSubnetId3'
+      Tags:
+        - Key: CloudFormationArn
+          Value: !Ref 'AWS::StackId'
+        - Key: Env
+          Value: !Ref 'Env'
+  RdsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VpcId'
+      GroupDescription: Allow MySQL (TCP3306)
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          CidrIp: !Ref 'VpcApSubnet'
+      Tags:
+        - Key: CloudFormationArn
+          Value: !Ref 'AWS::StackId'
+        - Key: Env
+          Value: !Ref 'Env'
+
+  RdsDbClusterParameterGroup:
+    Type: AWS::RDS::DBClusterParameterGroup
+    Properties:
+      Description: CloudFormation Aurora Cluster Parameter Group
+      Family: aurora5.6
+      Parameters:
+        server_audit_logging: 0
+      Tags:
+        - Key: CloudFormationArn
+          Value: !Ref 'AWS::StackId'
+        - Key: Env
+          Value: !Ref 'Env'
+
+  RdsDbCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      BackupRetentionPeriod: 7
+      DBClusterIdentifier: !Ref 'RdsDBClusterIdentifier'
+      DBClusterParameterGroupName: !Ref 'RdsDbClusterParameterGroup'
+      DBSubnetGroupName: !Ref 'RdsDbSubnetGroup'
+      DeletionProtection: false
+      Engine: aurora
+      EngineMode: serverless
+      EngineVersion: 5.6.10a
+      MasterUsername: !Ref 'RdsDbMasterUsername'
+      MasterUserPassword: !Ref 'RdsDbMasterUserPassword'
+      Port: 3306
+      PreferredBackupWindow: 15:25-15:55
+      PreferredMaintenanceWindow: Tue:16:05-Tue:16:35
+      ScalingConfiguration:
+        MinCapacity: 2
+        AutoPause: true
+        MaxCapacity: 4
+        SecondsUntilAutoPause: 1800
+      StorageEncrypted: true
+      Tags:
+        - Key: CloudFormationArn
+          Value: !Ref 'AWS::StackId'
+        - Key: Env
+          Value: !Ref 'Env'
+      VpcSecurityGroupIds:
+        - !Ref 'RdsSecurityGroup'
+
+Outputs:
+  RdsSecurityGroup:
+    Value: !Ref 'RdsSecurityGroup'
+  RdsDbClusterEndpoint:
+    Value: !GetAtt 'RdsDbCluster.Endpoint.Address'
+
