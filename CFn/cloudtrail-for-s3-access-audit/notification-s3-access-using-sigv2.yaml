@@ -1,0 +1,149 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Notification of S3 access using SigV2 (CloudTrail,CloudWatchEvent,SNS,SQS)
+Parameters:
+  CostTagsKey:
+    Description: Cost Allocation Tags Key
+    Type: String
+    Default: CmBillingGroup
+  CostTagsValue:
+    Description: Cost Allocation Tags Value
+    Type: String
+    Default: TrailS3Object
+  LogTargetS3Name:
+    Description: S3 bucket name that enabled logging of S3 object API
+    Type: String
+    Default: s3-bucket-name
+
+Resources:
+  S3Bucket:
+    DeletionPolicy: Retain
+    Type: AWS::S3::Bucket
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - Id: AutoDelete
+            Status: Enabled
+            ExpirationInDays: 7
+      Tags:
+        - Key: !Ref 'CostTagsKey'
+          Value: !Ref 'CostTagsValue'
+        - Key: CFnStackName
+          Value: !Sub '${AWS::StackName}'
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref 'S3Bucket'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AWSCloudTrailAclCheck
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !Sub 'arn:aws:s3:::${S3Bucket}'
+          - Sid: AWSCloudTrailWrite
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub 'arn:aws:s3:::${S3Bucket}/AWSLogs/${AWS::AccountId}/*'
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+  TrailS3Event:
+    DependsOn:
+      - BucketPolicy
+    Type: AWS::CloudTrail::Trail
+    Properties:
+      S3BucketName: !Ref 'S3Bucket'
+      IsLogging: true
+      IsMultiRegionTrail: false
+      IncludeGlobalServiceEvents: false
+      EventSelectors:
+        - IncludeManagementEvents: false
+          DataResources:
+            - Type: AWS::S3::Object
+              Values:
+                - !Sub 'arn:aws:s3:::${LogTargetS3Name}/'
+          ReadWriteType: All
+        - IncludeManagementEvents: false
+          DataResources:
+            - Type: AWS::S3::Object
+              Values:
+                - !Sub 'arn:aws:s3:::${S3Bucket}/dummy-0000/'
+          ReadWriteType: WriteOnly
+      Tags:
+        - Key: !Ref 'CostTagsKey'
+          Value: !Ref 'CostTagsValue'
+        - Key: CFnStackName
+          Value: !Sub '${AWS::StackName}'
+  CloudwatchEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: EventRule
+      EventPattern:
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - s3.amazonaws.com
+          additionalEventData:
+            SignatureVersion:
+              - SigV2
+      State: ENABLED
+      Targets:
+        - Arn: !Ref 'SnsTopic'
+          Id: EventRule
+  SnsPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Id: MyTopicPolicy
+        Statement:
+          - Sid: My-statement-id
+            Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action:
+              - sns:Publish
+            Resource: !Ref 'SnsTopic'
+      Topics:
+        - !Ref 'SnsTopic'
+  SnsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: trigger-consumer
+      Subscription:
+        - Endpoint: !GetAtt 'SqsQueue.Arn'
+          Protocol: sqs
+  SqsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      Tags:
+        - Key: !Ref 'CostTagsKey'
+          Value: !Ref 'CostTagsValue'
+        - Key: CFnStackName
+          Value: !Sub '${AWS::StackName}'
+
+  SqsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Id: MyQueuePolicy
+        Statement:
+          - Sid: Allow-SendMessage-SQS-From-SNS-Topic
+            Effect: Allow
+            Principal: '*'
+            Action:
+              - sqs:SendMessage
+            Resource: '*'
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref 'SnsTopic'
+      Queues:
+        - !Ref 'SqsQueue'
+
