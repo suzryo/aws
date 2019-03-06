@@ -1,0 +1,219 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Notification of S3 access using SigV2 (CloudTrail,CloudWatchEvent,SNS,SQS,Lambda)
+Parameters:
+  CostTagsKey:
+    Description: Cost Allocation Tags Key
+    Type: String
+    Default: CmBillingGroup
+  CostTagsValue:
+    Description: Cost Allocation Tags Value
+    Type: String
+    Default: TrailS3Object
+  LogTargetS3Name:
+    Description: S3 bucket name that enabled logging of S3 object API
+    Type: String
+    Default: s3-bucket-name
+
+Resources:
+  S3Bucket:
+    DeletionPolicy: Retain
+    Type: AWS::S3::Bucket
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - Id: AutoDelete
+            Status: Enabled
+            ExpirationInDays: 7
+      Tags:
+        - Key: !Ref 'CostTagsKey'
+          Value: !Ref 'CostTagsValue'
+        - Key: CFnStackName
+          Value: !Sub '${AWS::StackName}'
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref 'S3Bucket'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AWSCloudTrailAclCheck
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !Sub 'arn:aws:s3:::${S3Bucket}'
+          - Sid: AWSCloudTrailWrite
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub 'arn:aws:s3:::${S3Bucket}/AWSLogs/${AWS::AccountId}/*'
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+  TrailS3Event:
+    DependsOn:
+      - BucketPolicy
+    Type: AWS::CloudTrail::Trail
+    Properties:
+      S3BucketName: !Ref 'S3Bucket'
+      IsLogging: true
+      IsMultiRegionTrail: false
+      IncludeGlobalServiceEvents: false
+      EventSelectors:
+        - IncludeManagementEvents: false
+          DataResources:
+            - Type: AWS::S3::Object
+              Values:
+                - !Sub 'arn:aws:s3:::${LogTargetS3Name}/'
+          ReadWriteType: All
+        - IncludeManagementEvents: false
+          DataResources:
+            - Type: AWS::S3::Object
+              Values:
+                - !Sub 'arn:aws:s3:::${S3Bucket}/dummy-0000/'
+          ReadWriteType: WriteOnly
+      Tags:
+        - Key: !Ref 'CostTagsKey'
+          Value: !Ref 'CostTagsValue'
+        - Key: CFnStackName
+          Value: !Sub '${AWS::StackName}'
+  CloudwatchEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: EventRule
+      EventPattern:
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - s3.amazonaws.com
+          additionalEventData:
+            SignatureVersion:
+              - SigV2
+      State: ENABLED
+      Targets:
+        - Arn: !Ref 'SnsTopic'
+          Id: EventRule
+  SnsPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Id: MyTopicPolicy
+        Statement:
+          - Sid: My-statement-id
+            Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action:
+              - sns:Publish
+            Resource: !Ref 'SnsTopic'
+      Topics:
+        - !Ref 'SnsTopic'
+  SnsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: trigger-consumer
+      Subscription:
+        - Endpoint: !GetAtt 'SqsQueue.Arn'
+          Protocol: sqs
+        - Endpoint: !GetAtt 'LambdaFunction.Arn'
+          Protocol: lambda
+  SqsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      Tags:
+        - Key: !Ref 'CostTagsKey'
+          Value: !Ref 'CostTagsValue'
+        - Key: CFnStackName
+          Value: !Sub '${AWS::StackName}'
+
+  SqsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Id: MyQueuePolicy
+        Statement:
+          - Sid: Allow-SendMessage-SQS-From-SNS-Topic
+            Effect: Allow
+            Principal: '*'
+            Action:
+              - sqs:SendMessage
+            Resource: '*'
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref 'SnsTopic'
+      Queues:
+        - !Ref 'SqsQueue'
+
+  LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref 'LambdaFunction'
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref 'SnsTopic'
+
+  LogGroupLambda:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Join ['', [/aws/lambda/, !Ref 'LambdaFunction']]
+      RetentionInDays: 7
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource: '*'
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaRole.Arn
+      Code:
+        ZipFile: !Sub |
+          import json
+          def lambda_handler(event, context):
+            a = json.loads(event['Records'][0]['Sns']['Message'])['detail']
+            b = {}
+            b["eventTime"] = a['eventTime']
+            b["eventSource"] = a['eventSource']
+            b["eventName"] = a['eventName']
+            b["sourceIPAddress"] = a['sourceIPAddress']
+            b["userAgent"] = a['userAgent']
+            b["requestParameters"] = a['requestParameters']
+            b["userIdentity"] = a['userIdentity']
+            b["additionalEventData"] = a['additionalEventData']
+            print(json.dumps(b))
+            return b
+      Runtime: python3.7
+      MemorySize: 128
+      Timeout: 60
+      Description: 'Output S3 log (using SigV2), SNS message to CloudWatchLogs'
+      Tags:
+      - Key: CloudformationArn
+        Value: !Ref 'AWS::StackId'
+   
