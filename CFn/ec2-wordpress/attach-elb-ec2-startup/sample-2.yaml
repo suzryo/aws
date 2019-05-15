@@ -1,0 +1,78 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: EC2 (attach elb by userdata) sample
+# sample-2
+Parameters:
+  WebStack:
+    Description: ELB(ALB) CloudFormation StackName
+    Type: String
+    Default: sample-1
+
+  Ec2KeyName:
+    Description: EC2 SSH KEY
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: ''
+  Ec2InstanceType:
+    Description: EC2 InstanceType
+    Type: String
+    Default: t3.small
+  Ec2ImageIdBase:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+  Ec2SubnetId:
+    Description: Subnet IDs
+    Type: AWS::EC2::Subnet::Id
+    Default: ''
+
+Resources:
+  Ec2LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub '${AWS::StackName}-LaunchTemplate'
+      LaunchTemplateData:
+        IamInstanceProfile:
+          Arn: !ImportValue
+            Fn::Sub: ${WebStack}-Ec2IamInstanceProfile
+        KeyName: !Ref 'Ec2KeyName'
+        ImageId: !Ref 'Ec2ImageIdBase'
+        InstanceType: t3.micro
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub '${AWS::StackName}'
+          - ResourceType: volume
+            Tags:
+              - Key: Name
+                Value: !Sub '${AWS::StackName}'
+        UserData: !Base64
+          Fn::Sub: |
+            #cloud-config
+            packages:
+              - jq
+              - httpd
+            runcmd:
+              - export AWS_DEFAULT_REGION=${AWS::Region}
+              - STACK_NAME=${WebStack}
+              - INSTANCE_ID=`curl -s http://169.254.169.254/latest/meta-data/instance-id`
+              - TARGET_GROUP_ARN=`aws cloudformation describe-stack-resource --stack-name $STACK_NAME --logical-resource-id AlbTargetGroup | jq -r .StackResourceDetail.PhysicalResourceId`
+              # httpd setting
+              - echo "<html><body>$INSTANCE_ID<br>`date`</body></html>" > /var/www/html/index.html
+              - systemctl start httpd
+              - systemctl enable httpd
+              # elbv2 register-targets
+              - aws elbv2 register-targets --target-group-arn $TARGET_GROUP_ARN --targets Id=$INSTANCE_ID,Port=80
+
+  Ec2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref 'Ec2LaunchTemplate'
+        Version: !GetAtt 'Ec2LaunchTemplate.LatestVersionNumber'
+      SubnetId: !Ref 'Ec2SubnetId'
+      SecurityGroupIds:
+        - !ImportValue
+          Fn::Sub: ${WebStack}-Ec2SecurityGroupId
+
+
+
+

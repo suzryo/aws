@@ -1,0 +1,156 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ELB(alb),SecurityGroup(ELB,EC2), IAM(role) sample 
+# sample-1
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: VPC
+        Parameters:
+          - VpcId
+          - ElbSubnetIds
+      - Label:
+          default: SecurityGroup
+        Parameters:
+          - IpAllowedEc2ssh
+Parameters:
+  VpcId:
+    Description: VPC ID
+    Type: AWS::EC2::VPC::Id
+    Default: ''
+  ElbSubnetIds:
+    Description: Frontend subnets List (ELB)
+    Type: List<AWS::EC2::Subnet::Id>
+    Default: ''
+  IpAllowedEc2ssh:
+    Description: IP to allow SSH connection to EC2
+    Type: String
+    Default: '127.0.0.1/32'
+Resources:
+  #ELB
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VpcId'
+      GroupDescription: !Sub '${AWS::StackName} ELB Internet publishing (http)'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: StackId
+          Value: !Sub '${AWS::StackId}'
+  AlbTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 60
+      HealthCheckPath: /
+      HealthCheckPort: traffic-port
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 30
+      HealthyThresholdCount: 2
+      Matcher:
+        HttpCode: 200
+      Port: 80
+      Protocol: HTTP
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: 10
+      UnhealthyThresholdCount: 3
+      VpcId: !Ref 'VpcId'
+  AlbLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '60'
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref 'AlbSecurityGroup'
+      Subnets: !Ref 'ElbSubnetIds'
+      Tags:
+        - Key: StackId
+          Value: !Sub '${AWS::StackId}'
+
+  AlbListenerHTTP:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref 'AlbTargetGroup'
+      LoadBalancerArn: !Ref 'AlbLoadBalancer'
+      Port: '80'
+      Protocol: HTTP
+
+  #EC2
+  Ec2SecurityGroup:
+    DependsOn: AlbSecurityGroup
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VpcId'
+      GroupDescription: !Sub '${AWS::StackName} EC2 (HTTP access from ELB)'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !GetAtt 'AlbSecurityGroup.GroupId'
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref 'IpAllowedEc2ssh'
+      Tags:
+        - Key: StackId
+          Value: !Sub '${AWS::StackId}'
+  Ec2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+
+  Ec2RolePolicies:
+    Type: AWS::IAM::Policy
+    DependsOn: AlbTargetGroup
+    Properties:
+      PolicyName: Ec2RolePolicies
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - cloudformation:Describe*
+            Resource:
+              - !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}*'
+          - Effect: Allow
+            Action:
+              - elasticloadbalancing:Describe*
+              - elasticloadbalancing:RegisterTargets
+            Resource:
+              - !Ref 'AlbTargetGroup'
+      Roles:
+        - !Ref 'Ec2Role'
+  Ec2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref 'Ec2Role'
+
+Outputs:
+  Ec2SecurityGroupId:
+    Value: !GetAtt 'Ec2SecurityGroup.GroupId'
+    Export:
+      Name: !Sub '${AWS::StackName}-Ec2SecurityGroupId'
+  Ec2IamInstanceProfile:
+    Value: !GetAtt 'Ec2InstanceProfile.Arn'
+    Export:
+      Name: !Sub '${AWS::StackName}-Ec2IamInstanceProfile'
+
