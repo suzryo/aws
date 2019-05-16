@@ -43,7 +43,7 @@ Parameters:
   IpAllowedEc2ssh:
     Description: IP to allow SSH connection to EC2
     Type: String
-    Default: '106.73.25.32/32'
+    Default: ''
 
   DbRootPassword:
     NoEcho: true
@@ -122,6 +122,10 @@ Resources:
               - echo -e "[client]\npassword=\"${DbRootPassword}\"" > /root/.my.cnf
               - chmod 400 /root/.my.cnf
               # httpd
+              ## xml,  mbstring , intl, mcrypt
+              - yum install php-xml php-xmlrpc php-mbstring php-intl php-pecl-mcrypt php-xsl -y
+              ## gd
+              - yum install php-gd -y
               ## keepalive
               - cp /root/cloud-init/httpd/keepalive.conf /etc/httpd/conf.d/keepalive.conf
               ## mod_http2 off
