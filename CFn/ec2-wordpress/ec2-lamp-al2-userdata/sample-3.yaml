@@ -117,7 +117,6 @@ Resources:
               - systemctl start mariadb
               - systemctl enable mariadb
               ## db-init
-              - [ sh, -c, "cat /root/cloud-init/mysql/wp-db-pref.sql | mysql -u root" ]
               - [ sh, -c, "cat /root/cloud-init/mysql/db-secure_installation.sql | mysql -u root" ]
               - echo -e "[client]\npassword=\"${DbRootPassword}\"" > /root/.my.cnf
               - chmod 400 /root/.my.cnf
@@ -150,19 +149,6 @@ Resources:
                 owner: root
                 group: root
                 path: /root/cloud-init/mysql/my.cnf
-
-               # Initial setting DB for Wordpress
-              - content: |
-                  CREATE DATABASE IF NOT EXISTS ${WPDbName};
-                  GRANT USAGE ON ${WPDbName}.* to ${WPDbUser}@"%" IDENTIFIED BY '${WPDbPassword}';
-                  GRANT USAGE ON ${WPDbName}.* to ${WPDbUser}@"localhost" IDENTIFIED BY '${WPDbPassword}';
-                  GRANT ALL PRIVILEGES ON ${WPDbName}.* TO ${WPDbUser}@"%";
-                  GRANT ALL PRIVILEGES ON ${WPDbName}.* TO ${WPDbUser}@"localhost";
-                  FLUSH PRIVILEGES;
-                mode: '000600'
-                owner: root
-                group: root
-                path: /root/cloud-init/mysql/wp-db-pref.sql
 
               # mysql_secure_installation (substitution)
               - content: |
