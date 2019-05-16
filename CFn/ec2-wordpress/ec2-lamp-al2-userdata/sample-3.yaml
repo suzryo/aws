@@ -1,0 +1,205 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ec2-lamp-amazon-linux-2 (userdata) sample-3
+# sample-3
+# https://docs.aws.amazon.com/ja_jp/AWSEC2/latest/UserGuide/ec2-lamp-amazon-linux-2.html
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: VPC
+        Parameters:
+          - Ec2SubnetId
+      - Label:
+          default: EC2
+        Parameters:
+          - Ec2KeyName
+          - Ec2InstanceType
+          - Ec2ImageId
+          - IpAllowedEc2ssh
+      - Label:
+          default: mysql
+        Parameters:
+          - DbRootPassword
+          - WPDbName
+          - WPDbUser
+          - WPDbPassword
+
+Parameters:
+  Ec2KeyName:
+    Description: EC2 SSH KEY
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: ''
+  Ec2InstanceType:
+    Description: EC2 InstanceType
+    Type: String
+    Default: t3.small
+  Ec2ImageId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+  Ec2SubnetId:
+    Description: Subnet IDs
+    Type: AWS::EC2::Subnet::Id
+    Default: ''
+  IpAllowedEc2ssh:
+    Description: IP to allow SSH connection to EC2
+    Type: String
+    Default: '106.73.25.32/32'
+
+  DbRootPassword:
+    NoEcho: true
+    Description: MariaDB Root Password 
+    Type: String
+    Default: 'aaaaaaaa'
+  WPDbName:
+    NoEcho: true
+    Description: WordPress DB DatabaseName 
+    Type: String
+    Default: wordpress_db
+  WPDbUser:
+    NoEcho: true
+    Description: WordPress DB User 
+    Type: String
+    Default: wordpress_user
+  WPDbPassword:
+    NoEcho: true
+    Description: WordPress DB Password 
+    Type: String
+    Default: 'bbbbbbbb'
+
+Resources:
+  Ec2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VpcId'
+      GroupDescription: !Sub '${AWS::StackName}-for-ec2'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref 'IpAllowedEc2ssh'
+      Tags:
+        - Key: StackId
+          Value: !Sub '${AWS::StackId}'
+
+  Ec2LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub '${AWS::StackName}-LaunchTemplate'
+      LaunchTemplateData:
+        KeyName: !Ref 'Ec2KeyName'
+        ImageId: !Ref 'Ec2ImageId'
+        InstanceType: t3.micro
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub '${AWS::StackName}'
+          - ResourceType: volume
+            Tags:
+              - Key: Name
+                Value: !Sub '${AWS::StackName}'
+        UserData: !Base64
+          Fn::Sub: |
+            #cloud-config
+            repo_update: true
+            repo_upgrade: all
+            packages:
+              - jq
+              - httpd
+            runcmd:
+              - yum update -y
+              # lamp-mariadb10.2-php7.2
+              - amazon-linux-extras install -y lamp-mariadb10.2-php7.2 php7.2
+              # mariadb
+              - yum install mariadb-server -y
+              - cp -b /root/cloud-init/mysql/my.cnf /etc/my.cnf
+              ## systemctl
+              - systemctl start mariadb
+              - systemctl enable mariadb
+              ## db-init
+              - [ sh, -c, "cat /root/cloud-init/mysql/wp-db-pref.sql | mysql -u root" ]
+              - [ sh, -c, "cat /root/cloud-init/mysql/db-secure_installation.sql | mysql -u root" ]
+              - echo -e "[client]\npassword=\"${DbRootPassword}\"" > /root/.my.cnf
+              - chmod 400 /root/.my.cnf
+              # httpd
+              ## keepalive
+              - cp /root/cloud-init/httpd/keepalive.conf /etc/httpd/conf.d/keepalive.conf
+              ## mod_http2 off
+              - sed -i -e "s/^LoadModule/#LoadModule/g" /etc/httpd/conf.modules.d/10-h2.conf
+              ## index.html
+              - echo "<html><body>$INSTANCE_ID<br>`date`</body></html>" > /var/www/html/index.html
+              ## systemctl
+              - systemctl start httpd
+              - systemctl enable httpd
+
+            write_files:
+               # /etc/my.cnf |
+              - content: |
+                  [client-server]
+                  [mysqld]
+                  query_cache_type=1
+                  query_cache_size=32M
+                  character-set-server=utf8
+                  symbolic-links=0
+                  !includedir /etc/my.cnf.d
+                mode: '000600'
+                owner: root
+                group: root
+                path: /root/cloud-init/mysql/my.cnf
+
+               # Initial setting DB for Wordpress
+              - content: |
+                  CREATE DATABASE IF NOT EXISTS ${WPDbName};
+                  GRANT USAGE ON ${WPDbName}.* to ${WPDbUser}@"%" IDENTIFIED BY '${WPDbPassword}';
+                  GRANT USAGE ON ${WPDbName}.* to ${WPDbUser}@"localhost" IDENTIFIED BY '${WPDbPassword}';
+                  GRANT ALL PRIVILEGES ON ${WPDbName}.* TO ${WPDbUser}@"%";
+                  GRANT ALL PRIVILEGES ON ${WPDbName}.* TO ${WPDbUser}@"localhost";
+                  FLUSH PRIVILEGES;
+                mode: '000600'
+                owner: root
+                group: root
+                path: /root/cloud-init/mysql/wp-db-pref.sql
+
+              # mysql_secure_installation (substitution)
+              - content: |
+                  UPDATE mysql.user SET Password=PASSWORD('${DbRootPassword}') WHERE User='root';
+                  DELETE FROM mysql.user WHERE User='';
+                  DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
+                  DROP DATABASE test;
+                  DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
+                  FLUSH PRIVILEGES;
+                mode: '000600'
+                owner: root
+                group: root
+                path: /root/cloud-init/mysql/db-secure_installation.sql
+
+               # httpd
+              - content: |
+                  KeepAlive On
+                  KeepAliveTimeout 120
+                mode: '000644'
+                owner: root
+                group: root
+                path: /etc/httpd/conf.d/keepalive.conf
+
+              - content: |
+                  User-agent: *
+                  Disallow: /
+                mode: '000644'
+                owner: root
+                group: root
+                path: /var/www/robots.txt
+
+  Ec2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref 'Ec2LaunchTemplate'
+        Version: !GetAtt 'Ec2LaunchTemplate.LatestVersionNumber'
+      SubnetId: !Ref 'Ec2SubnetId'
+      SecurityGroupIds:
+        - !Ref 'Ec2SecurityGroup'
+
+
+
+
