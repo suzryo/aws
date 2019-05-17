@@ -21,7 +21,7 @@ Metadata:
           - Ec2KeyName
           - Ec2InstanceType
           - Ec2ImageId
-          - IpAllowedEc2ssh
+          - AllowIp
       - Label:
           default: MySQL
         Parameters:
@@ -70,10 +70,10 @@ Parameters:
   Ec2ImageId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
-  IpAllowedEc2ssh:
-    Description: IP to allow SSH connection to EC2
+  AllowIp:
+    Description: IP address for administrator access (IPv4)
     Type: String
-    Default: ''
+    Default: '0.0.0.0/0'
 
   DbRootPassword:
     NoEcho: true
@@ -117,12 +117,6 @@ Resources:
     Properties:
       LaunchTemplateName: !Sub '${AWS::StackName}-LaunchTemplate'
       LaunchTemplateData:
-        #spot
-        #InstanceMarketOptions:
-        #  MarketType: spot
-        KeyName: !Ref 'Ec2KeyName'
-        ImageId: !Ref 'Ec2ImageId'
-        InstanceType: t3.micro
         TagSpecifications:
           - ResourceType: instance
             Tags:
@@ -179,9 +173,9 @@ Resources:
               - wp core install --url=https://${WPSiteURL} --title=cm-wordpress-sample --admin_user=admin --admin_password=${WPAdminPassword} --admin_email=${WPAdminEmail} --path=/var/www/wordpress
               - wp --path=/var/www/wordpress rewrite structure '/%postname%.html'
               - cp /root/cloud-init/httpd/.htaccess /var/www/wordpress/
+              - cp /var/www/html/robots.txt /var/www/wordpress/
               ## s3 plugin
               - [ sh, -c, "cd /root/cloud-init/wp-cli/; wp plugin install amazon-s3-and-cloudfront" ]
-
               ## clean
               - yum clean all
 
@@ -199,7 +193,6 @@ Resources:
                 owner: root
                 group: root
                 path: /root/cloud-init/mysql/my.cnf
-
               # mysql_secure_installation (substitution)
               - content: |
                   UPDATE mysql.user SET Password=PASSWORD('${DbRootPassword}') WHERE User='root';
@@ -212,7 +205,6 @@ Resources:
                 owner: root
                 group: root
                 path: /root/cloud-init/mysql/db-secure_installation.sql
-
                # httpd
               - content: |
                   KeepAlive On
@@ -221,15 +213,14 @@ Resources:
                 owner: root
                 group: root
                 path: /root/cloud-init/httpd/keepalive.conf
-
+               # robots.txt
               - content: |
                   User-agent: *
                   Disallow: /
                 mode: '000644'
                 owner: root
                 group: root
-                path: /var/www/robots.txt
-
+                path: /var/www/html/robots.txt
                # wordpress_db
               - content: |
                   CREATE DATABASE IF NOT EXISTS ${WPDbName};
@@ -242,7 +233,6 @@ Resources:
                 owner: root
                 group: root
                 path: /root/cloud-init/mysql/wordpress-db.sql
-
               # wp-cli.yml
               - content: |
                   path: /var/www/wordpress
@@ -273,8 +263,7 @@ Resources:
                 owner: root
                 group: root
                 path: /root/cloud-init/wp-cli/wp-cli.yml
-
-              # httpd/wordpress.conf
+              # wordpress.conf
               - content: |
                   <VirtualHost *:80>
                     DocumentRoot /var/www/wordpress
@@ -289,7 +278,7 @@ Resources:
                 owner: root
                 group: root
                 path: /root/cloud-init/httpd/wordpress.conf
-
+              # .htaccess
               - content: |
                   <IfModule mod_rewrite.c>
                     RewriteEngine On
@@ -303,6 +292,13 @@ Resources:
                 owner: root
                 group: root
                 path: /root/cloud-init/httpd/.htaccess
+        IamInstanceProfile: 
+          Arn: !GetAtt 'Ec2InstanceProfile.Arn'
+        KeyName: !Ref 'Ec2KeyName'
+        #InstanceMarketOptions:
+        #  MarketType: spot
+        ImageId: !Ref 'Ec2ImageId'
+        InstanceType: !Ref 'Ec2InstanceType'
 
   Ec2Instance:
     Type: AWS::EC2::Instance
@@ -346,7 +342,7 @@ Resources:
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
-          CidrIp: !Ref 'IpAllowedEc2ssh'
+          CidrIp: !Ref 'AllowIp'
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
@@ -364,11 +360,11 @@ Resources:
         - IpProtocol: tcp
           FromPort: 443
           ToPort: 444
-          CidrIp: 0.0.0.0/0
+          CidrIp: !Ref 'AllowIp'
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
-          CidrIp: 0.0.0.0/0
+          CidrIp: !Ref 'AllowIp'
 
   AlbLoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
