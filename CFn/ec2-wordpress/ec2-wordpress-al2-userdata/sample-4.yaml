@@ -173,9 +173,12 @@ Resources:
               - wp core install --url=https://${WPSiteURL} --title=cm-wordpress-sample --admin_user=admin --admin_password=${WPAdminPassword} --admin_email=${WPAdminEmail} --path=/var/www/wordpress
               - wp --path=/var/www/wordpress rewrite structure '/%postname%.html'
               - cp /root/cloud-init/httpd/.htaccess /var/www/wordpress/
-              - cp /var/www/html/robots.txt /var/www/wordpress/
               ## s3 plugin
               - [ sh, -c, "cd /root/cloud-init/wp-cli/; wp plugin install amazon-s3-and-cloudfront" ]
+              ## robots.txt
+              - cp /var/www/html/robots.txt /var/www/wordpress/
+              ## chown
+              - chown -R apache:apache /var/www/wordpress 
               ## clean
               - yum clean all
 
