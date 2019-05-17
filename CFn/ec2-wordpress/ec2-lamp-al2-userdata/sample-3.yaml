@@ -25,6 +25,10 @@ Metadata:
           - WPDbPassword
 
 Parameters:
+  VpcId:
+    Description: VPC ID
+    Type: AWS::EC2::VPC::Id
+    Default: ''
   Ec2KeyName:
     Description: EC2 SSH KEY
     Type: AWS::EC2::KeyPair::KeyName
