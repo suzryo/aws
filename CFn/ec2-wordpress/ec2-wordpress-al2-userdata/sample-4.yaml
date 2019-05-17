@@ -1,0 +1,446 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ec2-wordpress-amazon-linux-2 (userdata) sample-4
+# sample-4
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: VPC
+        Parameters:
+          - VpcId
+          - Ec2SubnetId
+          - ElbSubnetIds
+      - Label:
+          default: ELB
+        Parameters:
+          - AcmArnRegional
+          - DomainName
+      - Label:
+          default: EC2
+        Parameters:
+          - Ec2KeyName
+          - Ec2InstanceType
+          - Ec2ImageId
+          - IpAllowedEc2ssh
+      - Label:
+          default: MySQL
+        Parameters:
+          - DbRootPassword
+          - WPDbName
+          - WPDbUser
+          - WPDbPassword
+      - Label:
+          default: WordPress
+        Parameters:
+          - WPAdminEmail
+          - WPAdminPassword
+          - WPSiteURL
+
+Parameters:
+  VpcId:
+    Description: VPC ID
+    Type: AWS::EC2::VPC::Id
+    Default: ''
+  Ec2SubnetId:
+    Description: Subnet IDs
+    Type: AWS::EC2::Subnet::Id
+    Default: ''
+  ElbSubnetIds:
+    Description: Frontend subnets List (ELB)
+    Type: List<AWS::EC2::Subnet::Id>
+    Default: ''
+
+  AcmArnRegional:
+    Description: SSL certificate for ELB
+    Type: String
+    Default: ''
+  DomainName:
+    Description: Domains in Route53 hostedzone
+    Type: String
+    Default: example.com
+
+  Ec2KeyName:
+    Description: EC2 SSH KEY
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: ''
+  Ec2InstanceType:
+    Description: EC2 InstanceType
+    Type: String
+    Default: t3.small
+  Ec2ImageId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+  IpAllowedEc2ssh:
+    Description: IP to allow SSH connection to EC2
+    Type: String
+    Default: ''
+
+  DbRootPassword:
+    NoEcho: true
+    Description: MariaDB Root Password 
+    Type: String
+    Default: 'aaaaaaaa'
+  WPDbName:
+    NoEcho: true
+    Description: WordPress DB DatabaseName 
+    Type: String
+    Default: wordpress_db
+  WPDbUser:
+    NoEcho: true
+    Description: WordPress DB User 
+    Type: String
+    Default: wordpress_user
+  WPDbPassword:
+    NoEcho: true
+    Description: WordPress DB Password 
+    Type: String
+    Default: 'bbbbbbbb'
+
+  WPAdminEmail:
+    Description: WordPress Admin Password 
+    Type: String
+    Default: info@example.com
+  WPAdminPassword:
+    NoEcho: true
+    Description: WordPress Admin Password 
+    Type: String
+    Default: 'cccccccc'
+  WPSiteURL:
+    Description: WordPress FQDN (WP_HOME,WP_SITEURL)
+    Type: String
+    Default: wp.example.com
+
+Resources:
+
+  Ec2LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub '${AWS::StackName}-LaunchTemplate'
+      LaunchTemplateData:
+        #spot
+        #InstanceMarketOptions:
+        #  MarketType: spot
+        KeyName: !Ref 'Ec2KeyName'
+        ImageId: !Ref 'Ec2ImageId'
+        InstanceType: t3.micro
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub '${AWS::StackName}'
+          - ResourceType: volume
+            Tags:
+              - Key: Name
+                Value: !Sub '${AWS::StackName}'
+        UserData: !Base64
+          Fn::Sub: |
+            #cloud-config
+            repo_update: true
+            repo_upgrade: all
+            packages:
+              - jq
+              - httpd
+            runcmd:
+              - yum update -y
+              # lamp-mariadb10.2-php7.2
+              - amazon-linux-extras install -y lamp-mariadb10.2-php7.2 php7.2
+              # mariadb
+              - yum install mariadb-server -y
+              - cp -b /root/cloud-init/mysql/my.cnf /etc/my.cnf
+              ## systemctl
+              - systemctl start mariadb
+              - systemctl enable mariadb
+              ## db-init
+              # httpd
+              ## xml,  mbstring , intl, mcrypt, gd
+              - yum install php-xml php-xmlrpc php-mbstring php-intl php-pecl-mcrypt php-xsl php-gd -y
+              ## keepalive
+              - cp /root/cloud-init/httpd/keepalive.conf /etc/httpd/conf.d/keepalive.conf
+              ## mod_http2 off
+              - sed -i -e "s/^LoadModule/#LoadModule/g" /etc/httpd/conf.modules.d/10-h2.conf
+              ## systemctl
+              - systemctl enable httpd
+              # WordPress
+              ## db-init
+              - [ sh, -c, "cat /root/cloud-init/mysql/wordpress-db.sql | mysql -u root" ]
+              - [ sh, -c, "cat /root/cloud-init/mysql/db-secure_installation.sql | mysql -u root" ]
+              - echo -e "[client]\npassword=\"${DbRootPassword}\"" > /root/.my.cnf
+              - chmod 400 /root/.my.cnf
+              ## wordpress.conf
+              - cp /root/cloud-init/httpd/wordpress.conf /etc/httpd/conf.d/
+              - systemctl start httpd
+              ## wp-cli
+              - wget https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -P /tmp
+              - mv /tmp/wp-cli.phar /usr/local/bin/wp
+              - chmod +x /usr/local/bin/wp
+              ## wordpress install
+              - wp core download --locale=ja --path=/var/www/wordpress
+              - [ sh, -c, "cd /root/cloud-init/wp-cli/; wp core config" ]
+              - wp core install --url=https://${WPSiteURL} --title=cm-wordpress-sample --admin_user=admin --admin_password=${WPAdminPassword} --admin_email=${WPAdminEmail} --path=/var/www/wordpress
+              - wp --path=/var/www/wordpress rewrite structure '/%postname%.html'
+              - cp /root/cloud-init/httpd/.htaccess /var/www/wordpress/
+              ## s3 plugin
+              - [ sh, -c, "cd /root/cloud-init/wp-cli/; wp plugin install amazon-s3-and-cloudfront" ]
+
+              ## clean
+              - yum clean all
+
+            write_files:
+               # /etc/my.cnf |
+              - content: |
+                  [client-server]
+                  [mysqld]
+                  query_cache_type=1
+                  query_cache_size=32M
+                  character-set-server=utf8
+                  symbolic-links=0
+                  !includedir /etc/my.cnf.d
+                mode: '000600'
+                owner: root
+                group: root
+                path: /root/cloud-init/mysql/my.cnf
+
+              # mysql_secure_installation (substitution)
+              - content: |
+                  UPDATE mysql.user SET Password=PASSWORD('${DbRootPassword}') WHERE User='root';
+                  DELETE FROM mysql.user WHERE User='';
+                  DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
+                  DROP DATABASE test;
+                  DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
+                  FLUSH PRIVILEGES;
+                mode: '000600'
+                owner: root
+                group: root
+                path: /root/cloud-init/mysql/db-secure_installation.sql
+
+               # httpd
+              - content: |
+                  KeepAlive On
+                  KeepAliveTimeout 120
+                mode: '000644'
+                owner: root
+                group: root
+                path: /root/cloud-init/httpd/keepalive.conf
+
+              - content: |
+                  User-agent: *
+                  Disallow: /
+                mode: '000644'
+                owner: root
+                group: root
+                path: /var/www/robots.txt
+
+               # wordpress_db
+              - content: |
+                  CREATE DATABASE IF NOT EXISTS ${WPDbName};
+                  GRANT USAGE ON ${WPDbName}.* to ${WPDbUser}@"%" IDENTIFIED BY '${WPDbPassword}';
+                  GRANT USAGE ON ${WPDbName}.* to ${WPDbUser}@"localhost" IDENTIFIED BY '${WPDbPassword}';
+                  GRANT ALL PRIVILEGES ON ${WPDbName}.* TO ${WPDbUser}@"%";
+                  GRANT ALL PRIVILEGES ON ${WPDbName}.* TO ${WPDbUser}@"localhost";
+                  FLUSH PRIVILEGES;
+                mode: '000600'
+                owner: root
+                group: root
+                path: /root/cloud-init/mysql/wordpress-db.sql
+
+              # wp-cli.yml
+              - content: |
+                  path: /var/www/wordpress
+                  url: https://${WPSiteURL}
+                  user: admin
+                  core download:
+                    locale: ja
+                  core config:
+                    dbuser: wordpress_user
+                    dbpass: ${WPDbPassword}
+                    dbname: wordpress_db
+                    dbhost: 127.0.0.1
+                    extra-php: |
+                      define( 'WP_DEBUG', false );
+                      define('WP_HOME', 'https://${WPSiteURL}');
+                      define('WP_SITEURL', 'https://${WPSiteURL}');
+                      $_SERVER['HTTPS'] = 'on';;
+                      define('WP_LANG', 'ja');
+                      define( 'AS3CF_AWS_USE_EC2_IAM_ROLE', true );
+                      if ( defined( 'WP_CLI' ) && WP_CLI && ! isset( $_SERVER['HTTP_HOST'] ) ) {$_SERVER['HTTP_HOST'] = '${WPSiteURL}';}
+                   core install:
+                      admin_user: admin
+                      url: https://${WPSiteURL}
+                      admin_password: ${WPAdminPassword}
+                      admin_email: ${WPAdminEmail}
+                      title: "cm-sample"
+                mode: '000644'
+                owner: root
+                group: root
+                path: /root/cloud-init/wp-cli/wp-cli.yml
+
+              # httpd/wordpress.conf
+              - content: |
+                  <VirtualHost *:80>
+                    DocumentRoot /var/www/wordpress
+                    ServerName ${WPSiteURL}
+                    <Directory /var/www/wordpress/>
+                      AllowOverride All
+                      Require all granted
+                    </Directory>
+                    RewriteEngine On
+                  </VirtualHost>
+                mode: '000644'
+                owner: root
+                group: root
+                path: /root/cloud-init/httpd/wordpress.conf
+
+              - content: |
+                  <IfModule mod_rewrite.c>
+                    RewriteEngine On
+                    RewriteBase /
+                    RewriteRule ^index\.php$ - [L]
+                    RewriteCond %{REQUEST_FILENAME} !-f
+                    RewriteCond %{REQUEST_FILENAME} !-d
+                    RewriteRule . /index.php [L]
+                  </IfModule>
+                mode: '000644'
+                owner: root
+                group: root
+                path: /root/cloud-init/httpd/.htaccess
+
+  Ec2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref 'Ec2LaunchTemplate'
+        Version: !GetAtt 'Ec2LaunchTemplate.LatestVersionNumber'
+      SubnetId: !Ref 'Ec2SubnetId'
+      SecurityGroupIds:
+        - !Ref 'Ec2SecurityGroup'
+
+  Ec2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+
+  Ec2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref 'Ec2Role'
+
+  Ec2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VpcId'
+      GroupDescription: !Sub '${AWS::StackName}-for-ec2'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref 'IpAllowedEc2ssh'
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !GetAtt 'AlbSecurityGroup.GroupId'
+      Tags:
+        - Key: StackId
+          Value: !Sub '${AWS::StackId}'
+
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VpcId'
+      GroupDescription: !Sub '${AWS::StackName} ELB Internet publishing settings (http/https)'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 444
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  AlbLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '60'
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref 'AlbSecurityGroup'
+      Subnets: !Ref 'ElbSubnetIds'
+
+  AlbTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 60
+      HealthCheckPath: /wp-json/wp/v2/statuses/
+      HealthCheckPort: traffic-port
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 30
+      HealthyThresholdCount: 2
+      Matcher:
+        HttpCode: 200
+      Port: 80
+      Protocol: HTTP
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: 10
+        - Key: stickiness.enabled
+          Value: false
+      Targets:
+        - Id: !Ref 'Ec2Instance'
+          Port: '80'
+      UnhealthyThresholdCount: 5
+      VpcId: !Ref 'VpcId'
+
+  AlbListenerHTTPS:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      Certificates:
+        - CertificateArn: !Ref 'AcmArnRegional'
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref 'AlbTargetGroup'
+      LoadBalancerArn: !Ref 'AlbLoadBalancer'
+      Port: '443'
+      Protocol: HTTPS
+
+  AlbListenerHTTP:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: redirect
+          RedirectConfig:
+            Host: '#{host}'
+            Path: '/#{path}'
+            Port: 443
+            Protocol: HTTPS
+            Query: '#{query}'
+            StatusCode: HTTP_301
+      LoadBalancerArn: !Ref 'AlbLoadBalancer'
+      Port: '80'
+      Protocol: HTTP
+
+  Route53RecordSet:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Sub '${DomainName}.'
+      Comment: !Sub '${AWS::StackName}'
+      Name: !Sub '${WPSiteURL}.'
+      Type: A
+      AliasTarget:
+        HostedZoneId: !GetAtt 'AlbLoadBalancer.CanonicalHostedZoneID'
+        DNSName: !GetAtt 'AlbLoadBalancer.DNSName'
+
