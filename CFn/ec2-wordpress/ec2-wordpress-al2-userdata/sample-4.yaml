@@ -168,10 +168,10 @@ Resources:
               - mv /tmp/wp-cli.phar /usr/local/bin/wp
               - chmod +x /usr/local/bin/wp
               ## wordpress install
-              - wp core download --locale=ja --path=/var/www/wordpress
-              - [ sh, -c, "cd /root/cloud-init/wp-cli/; wp core config" ]
-              - wp core install --url=https://${WPSiteURL} --title=cm-wordpress-sample --admin_user=admin --admin_password=${WPAdminPassword} --admin_email=${WPAdminEmail} --path=/var/www/wordpress
-              - wp --path=/var/www/wordpress rewrite structure '/%postname%.html'
+              - /usr/local/bin/wp core download --locale=ja --path=/var/www/wordpress
+              - [ sh, -c, "cd /root/cloud-init/wp-cli/; /usr/local/bin/wp core config" ]
+              - /usr/local/bin/wp core install --url=https://${WPSiteURL} --title=cm-wordpress-sample --admin_user=admin --admin_password=${WPAdminPassword} --admin_email=${WPAdminEmail} --path=/var/www/wordpress
+              - /usr/local/bin/wp --path=/var/www/wordpress rewrite structure '/%postname%.html'
               - cp /root/cloud-init/httpd/.htaccess /var/www/wordpress/
               ## s3 plugin
               - [ sh, -c, "cd /root/cloud-init/wp-cli/; wp plugin install amazon-s3-and-cloudfront" ]
@@ -312,6 +312,17 @@ Resources:
       SubnetId: !Ref 'Ec2SubnetId'
       SecurityGroupIds:
         - !Ref 'Ec2SecurityGroup'
+
+  Ec2Eip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  Ec2EIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref 'Ec2Instance'
+      EIP: !Ref 'Ec2Eip'
 
   Ec2Role:
     Type: AWS::IAM::Role
