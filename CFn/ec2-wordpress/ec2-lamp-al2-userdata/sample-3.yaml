@@ -32,7 +32,7 @@ Parameters:
   Ec2InstanceType:
     Description: EC2 InstanceType
     Type: String
-    Default: t3.small
+    Default: t3.micro
   Ec2ImageId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
@@ -40,10 +40,10 @@ Parameters:
     Description: Subnet IDs
     Type: AWS::EC2::Subnet::Id
     Default: ''
-  IpAllowedEc2ssh:
-    Description: IP to allow SSH connection to EC2
+  AllowIp:
+    Description: IP address for administrator access (IPv4)
     Type: String
-    Default: ''
+    Default: '0.0.0.0/0'
 
   DbRootPassword:
     NoEcho: true
@@ -76,7 +76,11 @@ Resources:
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
-          CidrIp: !Ref 'IpAllowedEc2ssh'
+          CidrIp: !Ref 'AllowIp'
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: !Ref 'AllowIp'
       Tags:
         - Key: StackId
           Value: !Sub '${AWS::StackId}'
@@ -178,7 +182,7 @@ Resources:
                 mode: '000644'
                 owner: root
                 group: root
-                path: /var/www/robots.txt
+                path: /var/www/html/robots.txt
 
   Ec2Instance:
     Type: AWS::EC2::Instance
