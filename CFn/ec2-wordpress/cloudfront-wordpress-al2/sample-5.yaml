@@ -35,34 +35,46 @@ Metadata:
           - WPAdminEmail
           - WPAdminPassword
           - WPSiteURL
+      - Label:
+          default: CloudFront
+        Parameters:
+          - AcmArnGlobal
 
 Parameters:
-  VpcId:
-    Description: VPC ID
-    Type: AWS::EC2::VPC::Id
+
+
+  AcmArnGlobal:
+    Description: SSL certificate for CloudFront
+    Type: String
+    Default: ''
+  AcmArnRegional:
+    Description: SSL certificate for ELB
+    Type: String
+    Default: ''
+  AllowIp:
+    Description: IP address for administrator access (IPv4)
+    Type: String
+    Default: '0.0.0.0/0'
+  DomainName:
+    Description: Domains in Route53 hostedzone
+    Type: String
     Default: ''
   Ec2SubnetId:
     Description: Subnet IDs
     Type: AWS::EC2::Subnet::Id
     Default: ''
-  ElbSubnetIds:
-    Description: Frontend subnets List (ELB)
-    Type: List<AWS::EC2::Subnet::Id>
+  VpcId:
+    Description: VPC ID
+    Type: AWS::EC2::VPC::Id
     Default: ''
-
-  AcmArnRegional:
-    Description: SSL certificate for ELB
+  WPSiteURL:
+    Description: WordPress FQDN (WP_HOME,WP_SITEURL)
     Type: String
     Default: ''
-  AcmArnGlobal:
-    Description: SSL certificate for CloudFront
+  HostnamePrefix:
+    Description: Host name Prefix (S3Buket,CloudFront CNAME)
     Type: String
-    Default: ''
-
-  DomainName:
-    Description: Domains in Route53 hostedzone
-    Type: String
-    Default: 'example.com'
+    Default: wp
 
   Ec2KeyName:
     Description: EC2 SSH KEY
@@ -75,16 +87,7 @@ Parameters:
   Ec2ImageId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
-  AllowIp:
-    Description: IP address for administrator access (IPv4)
-    Type: String
-    Default: '0.0.0.0/0'
 
-  DbRootPassword:
-    NoEcho: true
-    Description: MariaDB Root Password 
-    Type: String
-    Default: 'aaaaaaaa'
   WPDbName:
     NoEcho: true
     Description: WordPress DB DatabaseName 
@@ -95,39 +98,32 @@ Parameters:
     Description: WordPress DB User 
     Type: String
     Default: wordpress_user
+  WPAdminEmail:
+    Description: WordPress Admin Password 
+    Type: String
+    Default: info@example.com
+
+  DbRootPassword:
+    NoEcho: true
+    Description: MariaDB Root Password 
+    Type: String
+    Default: 'aaaaaaaa'
   WPDbPassword:
     NoEcho: true
     Description: WordPress DB Password 
     Type: String
     Default: 'bbbbbbbb'
-
-  WPAdminEmail:
-    Description: WordPress Admin Password 
-    Type: String
-    Default: info@example.com
   WPAdminPassword:
     NoEcho: true
     Description: WordPress Admin Password 
     Type: String
     Default: 'cccccccc'
-  WPSiteURL:
-    Description: WordPress FQDN (WP_HOME,WP_SITEURL)
-    Type: String
-    Default: wp.example.com
-  HostnamePrefix:
-    Description: Host name Prefix
-    Type: String
-    Default: wp
-  ShardKey:
-    Description: OriginCustomHeaders
-    Type: String
-    Default: dddddddd
 
 Resources:
 
   CloudFrontDistributionElb:
     Type: AWS::CloudFront::Distribution
-    DependsOn: AlbLoadBalancer
+    DependsOn: NlbLoadBalancer
     Properties:
       DistributionConfig:
         Aliases:
@@ -135,10 +131,18 @@ Resources:
         Comment: !Sub '${AWS::StackName} elb'
         CustomErrorResponses:
           - ErrorCachingMinTTL: 300
-            ErrorCode: 403
-            ResponseCode: 200
-            ResponsePagePath: /index.html
+            ErrorCode: 404
+            ResponseCode: 404
+            ResponsePagePath: /error.html
         DefaultCacheBehavior:
+          AllowedMethods:
+            - DELETE
+            - GET
+            - HEAD
+            - OPTIONS
+            - PATCH
+            - POST
+            - PUT
           TargetOriginId: CustomOrigin
           ForwardedValues:
             QueryString: true
@@ -162,13 +166,15 @@ Resources:
         Enabled: 'true'
         Origins:
           - Id: CustomOrigin
-            DomainName: !GetAtt 'AlbLoadBalancer.DNSName'
+            DomainName: !GetAtt 'NlbLoadBalancer.DNSName'
             CustomOriginConfig:
               HTTPSPort: 443
               OriginProtocolPolicy: https-only
-            OriginCustomHeaders:
-              - HeaderName: x-pre-shared-key
-                HeaderValue: !Ref 'ShardKey'
+          - Id: CustumOriginS3media
+            DomainName: !Sub '${HostnamePrefix}-media-${AWS::Region}-${AWS::AccountId}.s3-website-${AWS::Region}.amazonaws.com'
+            CustomOriginConfig:
+              HTTPPort: 80
+              OriginProtocolPolicy: http-only
         CacheBehaviors:
           - PathPattern: /wp-includes/*
             AllowedMethods:
@@ -216,70 +222,6 @@ Resources:
             SmoothStreaming: false
             TargetOriginId: CustomOrigin
             ViewerProtocolPolicy: redirect-to-https
-          - PathPattern: /wp-login.php
-            AllowedMethods:
-              - DELETE
-              - GET
-              - HEAD
-              - OPTIONS
-              - PATCH
-              - POST
-              - PUT
-            CachedMethods:
-              - HEAD
-              - GET
-              - OPTIONS
-            Compress: true
-            ForwardedValues:
-              QueryString: true
-              Headers:
-                - Host
-                - Origin
-              Cookies:
-                Forward: whitelist
-                WhitelistedNames:
-                  - comerment_author_*
-                  - comerment_author_email_*
-                  - comerment_author_url_*
-                  - wordpress_*
-                  - wordpress_logged_in_*
-                  - wordpress_test_cookie
-                  - wp-settings-*
-            SmoothStreaming: false
-            TargetOriginId: CustomOrigin
-            ViewerProtocolPolicy: https-only
-          - PathPattern: /wp-admin/*
-            AllowedMethods:
-              - DELETE
-              - GET
-              - HEAD
-              - OPTIONS
-              - PATCH
-              - POST
-              - PUT
-            CachedMethods:
-              - HEAD
-              - GET
-              - OPTIONS
-            Compress: true
-            ForwardedValues:
-              QueryString: true
-              Headers:
-                - Host
-                - Origin
-              Cookies:
-                Forward: whitelist
-                WhitelistedNames:
-                  - comerment_author_*
-                  - comerment_author_email_*
-                  - comerment_author_url_*
-                  - wordpress_*
-                  - wordpress_logged_in_*
-                  - wordpress_test_cookie
-                  - wp-settings-*
-            SmoothStreaming: false
-            TargetOriginId: CustomOrigin
-            ViewerProtocolPolicy: https-only
           - PathPattern: /wp-json/*
             AllowedMethods:
               - DELETE
@@ -299,6 +241,8 @@ Resources:
               Headers:
                 - Host
                 - Origin
+                - Access-Control-Request-Headers
+                - Access-Control-Request-Method
               Cookies:
                 Forward: whitelist
                 WhitelistedNames:
@@ -309,9 +253,30 @@ Resources:
                   - wordpress_logged_in_*
                   - wordpress_test_cookie
                   - wp-settings-*
+            DefaultTTL: 300
+            MaxTTL: 300
+            MinTTL: 300
             SmoothStreaming: false
             TargetOriginId: CustomOrigin
-            ViewerProtocolPolicy: https-only
+            ViewerProtocolPolicy: redirect-to-https
+          - PathPattern: /wp-admin/*
+            Compress: true
+            ForwardedValues:
+              QueryString: false
+            DefaultTTL: 86400
+            MaxTTL: 86400
+            MinTTL: 86400
+            TargetOriginId: CustumOriginS3media
+            ViewerProtocolPolicy: redirect-to-https
+          - PathPattern: /wp-login.php
+            Compress: true
+            ForwardedValues:
+              QueryString: false
+            DefaultTTL: 86400
+            MaxTTL: 86400
+            MinTTL: 86400
+            TargetOriginId: CustumOriginS3media
+            ViewerProtocolPolicy: redirect-to-https
         ViewerCertificate:
           SslSupportMethod: sni-only
           AcmCertificateArn: !Ref 'AcmArnGlobal'
@@ -325,7 +290,7 @@ Resources:
     Properties:
       DistributionConfig:
         Aliases:
-          - !Sub '${HostnamePrefix}-media-${AWS::Region}.${DomainName}'
+          - !Sub '${HostnamePrefix}-media.${DomainName}'
         Comment: !Sub '${AWS::StackName} s3media'
         DefaultCacheBehavior:
           TargetOriginId: CustumOrigin
@@ -342,7 +307,7 @@ Resources:
         Enabled: 'true'
         Origins:
           - Id: CustumOrigin
-            DomainName: !Sub '${HostnamePrefix}-media-${AWS::Region}.s3-website-${AWS::Region}.amazonaws.com'
+            DomainName: !Sub '${HostnamePrefix}-media-${AWS::Region}-${AWS::AccountId}.s3-website-${AWS::Region}.amazonaws.com'
             CustomOriginConfig:
               HTTPPort: 80
               OriginProtocolPolicy: http-only
@@ -356,7 +321,7 @@ Resources:
   S3BucketMedia:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub '${HostnamePrefix}-media-${AWS::Region}'
+      BucketName: !Sub '${HostnamePrefix}-media-${AWS::Region}-${AWS::AccountId}'
       LifecycleConfiguration:
         Rules:
           - Id: NoncurrentVersionExpiration
@@ -399,7 +364,7 @@ Resources:
               VolumeSize: 10
               VolumeType: gp2
               DeleteOnTermination: true
-              Encrypted: false
+              Encrypted: true
         TagSpecifications:
           - ResourceType: instance
             Tags:
@@ -665,75 +630,55 @@ Resources:
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
-          SourceSecurityGroupId: !GetAtt 'AlbSecurityGroup.GroupId'
-      Tags:
-        - Key: StackId
-          Value: !Sub '${AWS::StackId}'
-
-  AlbSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      VpcId: !Ref 'VpcId'
-      GroupDescription: !Sub '${AWS::StackName} ELB Internet publishing settings (https)'
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 443
-          ToPort: 444
           CidrIp: '0.0.0.0/0'
-
-  AlbLoadBalancer:
-    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
-    Properties:
-      LoadBalancerAttributes:
-        - Key: idle_timeout.timeout_seconds
-          Value: '60'
-      Scheme: internet-facing
-      SecurityGroups:
-        - !Ref 'AlbSecurityGroup'
-      Subnets: !Ref 'ElbSubnetIds'
       Tags:
         - Key: StackId
           Value: !Sub '${AWS::StackId}'
-      Type: application
 
-  AlbTargetGroup:
+  NlbEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NlbLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    DependsOn: NlbEIP
+    Properties:
+      SubnetMappings:
+        - AllocationId: !GetAtt 'NlbEIP.AllocationId'
+          SubnetId: !Ref 'Ec2SubnetId'
+      Tags:
+        - Key: StackId
+          Value: !Sub '${AWS::StackId}'
+      Type: network
+
+  NlbTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
-      HealthCheckIntervalSeconds: 60
-      HealthCheckPath: /wp-json/wp/v2/statuses/
-      HealthCheckPort: traffic-port
-      HealthCheckProtocol: HTTP
-      HealthCheckTimeoutSeconds: 30
-      HealthyThresholdCount: 2
-      Matcher:
-        HttpCode: 200
       Port: 80
-      Protocol: HTTP
+      Protocol: TCP
       Tags:
         - Key: StackId
           Value: !Sub '${AWS::StackId}'
       TargetGroupAttributes:
         - Key: deregistration_delay.timeout_seconds
-          Value: 10
-        - Key: stickiness.enabled
-          Value: false
+          Value: '20'
       Targets:
         - Id: !Ref 'Ec2Instance'
-          Port: '80'
-      UnhealthyThresholdCount: 5
+          Port: 80
       VpcId: !Ref 'VpcId'
 
-  AlbListenerHTTPS:
+  NlbListenerHTTPS:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Properties:
-      Certificates:
-        - CertificateArn: !Ref 'AcmArnRegional'
       DefaultActions:
         - Type: forward
-          TargetGroupArn: !Ref 'AlbTargetGroup'
-      LoadBalancerArn: !Ref 'AlbLoadBalancer'
+          TargetGroupArn: !Ref 'NlbTargetGroup'
+      LoadBalancerArn: !Ref 'NlbLoadBalancer'
       Port: '443'
-      Protocol: HTTPS
+      Protocol: TLS
+      Certificates:
+        - CertificateArn: !Ref 'AcmArnRegional'
 
   Route53RecordSetElb:
     Type: AWS::Route53::RecordSet
@@ -751,7 +696,7 @@ Resources:
     Properties:
       HostedZoneName: !Sub '${DomainName}.'
       Comment: !Sub '${AWS::StackName}-s3-media'
-      Name: !Sub '${HostnamePrefix}-media-${AWS::Region}.${DomainName}.'
+      Name: !Sub '${HostnamePrefix}-media.${DomainName}.'
       Type: A
       AliasTarget:
         HostedZoneId: 'Z2FDTNDATAQYW2'
