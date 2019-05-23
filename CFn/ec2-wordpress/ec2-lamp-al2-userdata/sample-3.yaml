@@ -138,6 +138,7 @@ Resources:
               ## mod_http2 off
               - sed -i -e "s/^LoadModule/#LoadModule/g" /etc/httpd/conf.modules.d/10-h2.conf
               ## index.html
+              - INSTANCE_ID=`curl -s http://169.254.169.254/latest/meta-data/instance-id`
               - echo "<html><body>$INSTANCE_ID<br>`date`</body></html>" > /var/www/html/index.html
               ## systemctl
               - systemctl start httpd
