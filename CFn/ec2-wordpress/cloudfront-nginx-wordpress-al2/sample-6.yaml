@@ -1,0 +1,1054 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: cloudfront-nginx-wordpress-al2 sample-6
+# sample-6
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: VPC
+        Parameters:
+          - VpcId
+          - Ec2SubnetId
+          - ElbSubnetIds
+      - Label:
+          default: ELB
+        Parameters:
+          - AcmArnRegional
+          - DomainName
+      - Label:
+          default: EC2
+        Parameters:
+          - Ec2KeyName
+          - Ec2InstanceType
+          - Ec2ImageId
+          - AllowIp
+      - Label:
+          default: MySQL
+        Parameters:
+          - DbRootPassword
+          - WPDbName
+          - WPDbUser
+          - WPDbPassword
+      - Label:
+          default: WordPress
+        Parameters:
+          - WPAdminEmail
+          - WPAdminPassword
+          - WPSiteURL
+      - Label:
+          default: CloudFront
+        Parameters:
+          - AcmArnGlobal
+
+Parameters:
+
+
+  AcmArnGlobal:
+    Description: SSL certificate for CloudFront
+    Type: String
+    Default: ''
+  AcmArnRegional:
+    Description: SSL certificate for ELB
+    Type: String
+    Default: ''
+  AllowIp:
+    Description: IP address for administrator access (IPv4)
+    Type: String
+    Default: '0.0.0.0/0'
+  DomainName:
+    Description: Domains in Route53 hostedzone
+    Type: String
+    Default: ''
+  Ec2SubnetId:
+    Description: Subnet IDs
+    Type: AWS::EC2::Subnet::Id
+    Default: ''
+  VpcId:
+    Description: VPC ID
+    Type: AWS::EC2::VPC::Id
+    Default: ''
+  WPSiteURL:
+    Description: WordPress FQDN (WP_HOME,WP_SITEURL)
+    Type: String
+    Default: ''
+  HostnamePrefix:
+    Description: Host name Prefix (S3Buket,CloudFront CNAME)
+    Type: String
+    Default: wp
+
+  Ec2KeyName:
+    Description: EC2 SSH KEY
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: ''
+  Ec2InstanceType:
+    Description: EC2 InstanceType
+    Type: String
+    Default: t3.small
+  Ec2ImageId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+
+  WPDbName:
+    NoEcho: true
+    Description: WordPress DB DatabaseName 
+    Type: String
+    Default: wordpress_db
+  WPDbUser:
+    NoEcho: true
+    Description: WordPress DB User 
+    Type: String
+    Default: wordpress_user
+  WPAdminEmail:
+    Description: WordPress Admin Password 
+    Type: String
+    Default: info@example.com
+
+  DbRootPassword:
+    NoEcho: true
+    Description: MariaDB Root Password 
+    Type: String
+    Default: 'aaaaaaaa'
+  WPDbPassword:
+    NoEcho: true
+    Description: WordPress DB Password 
+    Type: String
+    Default: 'bbbbbbbb'
+  WPAdminPassword:
+    NoEcho: true
+    Description: WordPress Admin Password 
+    Type: String
+    Default: 'cccccccc'
+
+  WPBasicAuthId:
+    Description: wp-admin basicauth ID 
+    Type: String
+    Default: dddddddd
+  WPBasicAuthPass:
+    Description: wp-admin basicauth Password 
+    Type: String
+    Default: eeeeeeee
+
+  CfNginxPreSharedkey:
+    Description: Pre-shared key (CloudFront, Nginx)
+    Type: String
+    Default: ffffffff
+
+Resources:
+
+  CloudFrontDistributionElb:
+    Type: AWS::CloudFront::Distribution
+    DependsOn: NlbLoadBalancer
+    Properties:
+      DistributionConfig:
+        Aliases:
+          - !Sub '${WPSiteURL}'
+        Comment: !Sub '${AWS::StackName} elb'
+        CustomErrorResponses:
+          - ErrorCachingMinTTL: 300
+            ErrorCode: 404
+            ResponseCode: 404
+            ResponsePagePath: /error.html
+        DefaultCacheBehavior:
+          AllowedMethods:
+            - DELETE
+            - GET
+            - HEAD
+            - OPTIONS
+            - PATCH
+            - POST
+            - PUT
+          TargetOriginId: CustomOrigin
+          ForwardedValues:
+            QueryString: true
+            Headers:
+              - Host
+              - Origin
+              - CloudFront-Is-Desktop-Viewer
+              - CloudFront-Is-Mobile-Viewer
+              - CloudFront-Is-Tablet-Viewer
+            Cookies:
+              Forward: whitelist
+              WhitelistedNames:
+                - comerment_author_*
+                - comerment_author_email_*
+                - comerment_author_url_*
+                - wordpress_*
+                - wordpress_logged_in_*
+                - wordpress_test_cookie
+                - wp-settings-*
+          DefaultTTL: 300
+          MaxTTL: 3600
+          MinTTL: 0
+          ViewerProtocolPolicy: redirect-to-https
+        Enabled: 'true'
+        Origins:
+          - Id: CustomOrigin
+            DomainName: !GetAtt 'NlbLoadBalancer.DNSName'
+            CustomOriginConfig:
+              HTTPSPort: 50443
+              OriginProtocolPolicy: https-only
+            OriginCustomHeaders:
+              - HeaderName: X-pre-shared-key
+                HeaderValue: !Ref 'CfNginxPreSharedkey'
+          - Id: CustumOriginS3media
+            DomainName: !Sub '${HostnamePrefix}-media-${AWS::Region}-${AWS::AccountId}.s3-website-${AWS::Region}.amazonaws.com'
+            CustomOriginConfig:
+              HTTPPort: 80
+              OriginProtocolPolicy: http-only
+        CacheBehaviors:
+          - PathPattern: /wp-includes/*
+            AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+            CachedMethods:
+              - HEAD
+              - GET
+              - OPTIONS
+            Compress: true
+            ForwardedValues:
+              QueryString: false
+              Headers:
+                - Host
+                - Origin
+                - Access-Control-Request-Headers
+                - Access-Control-Request-Method
+                - CloudFront-Is-Desktop-Viewer
+                - CloudFront-Is-Mobile-Viewer
+                - CloudFront-Is-Tablet-Viewer
+                - CloudFront-Is-SmartTV-Viewer
+            DefaultTTL: 300
+            MaxTTL: 3600
+            MinTTL: 0
+            SmoothStreaming: false
+            TargetOriginId: CustomOrigin
+            ViewerProtocolPolicy: redirect-to-https
+          - PathPattern: /wp-content/*
+            AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+            CachedMethods:
+              - HEAD
+              - GET
+              - OPTIONS
+            Compress: true
+            ForwardedValues:
+              QueryString: false
+              Headers:
+                - Host
+                - Origin
+                - Access-Control-Request-Headers
+                - Access-Control-Request-Method
+                - CloudFront-Is-Desktop-Viewer
+                - CloudFront-Is-Mobile-Viewer
+                - CloudFront-Is-Tablet-Viewer
+                - CloudFront-Is-SmartTV-Viewer
+            DefaultTTL: 300
+            MaxTTL: 3600
+            MinTTL: 0
+            SmoothStreaming: false
+            TargetOriginId: CustomOrigin
+            ViewerProtocolPolicy: redirect-to-https
+          - PathPattern: /wp-json/*
+            AllowedMethods:
+              - DELETE
+              - GET
+              - HEAD
+              - OPTIONS
+              - PATCH
+              - POST
+              - PUT
+            CachedMethods:
+              - HEAD
+              - GET
+              - OPTIONS
+            Compress: true
+            ForwardedValues:
+              QueryString: true
+              Headers:
+                - Host
+                - Origin
+                - Access-Control-Request-Headers
+                - Access-Control-Request-Method
+                - CloudFront-Is-Desktop-Viewer
+                - CloudFront-Is-Mobile-Viewer
+                - CloudFront-Is-Tablet-Viewer
+                - CloudFront-Is-SmartTV-Viewer
+              Cookies:
+                Forward: whitelist
+                WhitelistedNames:
+                  - comerment_author_*
+                  - comerment_author_email_*
+                  - comerment_author_url_*
+                  - wordpress_*
+                  - wordpress_logged_in_*
+                  - wordpress_test_cookie
+                  - wp-settings-*
+            DefaultTTL: 300
+            MaxTTL: 300
+            MinTTL: 300
+            SmoothStreaming: false
+            TargetOriginId: CustomOrigin
+            ViewerProtocolPolicy: redirect-to-https
+          - PathPattern: /wp-admin/*
+            Compress: true
+            ForwardedValues:
+              QueryString: false
+            DefaultTTL: 86400
+            MaxTTL: 86400
+            MinTTL: 86400
+            TargetOriginId: CustumOriginS3media
+            ViewerProtocolPolicy: redirect-to-https
+          - PathPattern: /wp-login.php
+            Compress: true
+            ForwardedValues:
+              QueryString: false
+            DefaultTTL: 86400
+            MaxTTL: 86400
+            MinTTL: 86400
+            TargetOriginId: CustumOriginS3media
+            ViewerProtocolPolicy: redirect-to-https
+        ViewerCertificate:
+          SslSupportMethod: sni-only
+          AcmCertificateArn: !Ref 'AcmArnGlobal'
+      Tags:
+        - Key: StackId
+          Value: !Sub '${AWS::StackId}'
+
+  CloudFrontDistributionMedia:
+    Type: AWS::CloudFront::Distribution
+    DependsOn: S3BucketMedia
+    Properties:
+      DistributionConfig:
+        Aliases:
+          - !Sub '${HostnamePrefix}-media.${DomainName}'
+        Comment: !Sub '${AWS::StackName} s3media'
+        DefaultCacheBehavior:
+          TargetOriginId: CustumOrigin
+          ForwardedValues:
+            QueryString: false
+          ViewerProtocolPolicy: redirect-to-https
+          ForwardedValues:
+            QueryString: 'true'
+            Headers:
+              - Referer
+          DefaultTTL: 300
+          MaxTTL: 3600
+          MinTTL: 0
+        Enabled: 'true'
+        Origins:
+          - Id: CustumOrigin
+            DomainName: !Sub '${HostnamePrefix}-media-${AWS::Region}-${AWS::AccountId}.s3-website-${AWS::Region}.amazonaws.com'
+            CustomOriginConfig:
+              HTTPPort: 80
+              OriginProtocolPolicy: http-only
+        ViewerCertificate:
+          SslSupportMethod: sni-only
+          AcmCertificateArn: !Ref 'AcmArnGlobal'
+      Tags:
+        - Key: StackId
+          Value: !Sub '${AWS::StackId}'
+
+  S3BucketMedia:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${HostnamePrefix}-media-${AWS::Region}-${AWS::AccountId}'
+      LifecycleConfiguration:
+        Rules:
+          - Id: NoncurrentVersionExpiration
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 14
+      Tags:
+        - Key: StackId
+          Value: !Sub '${AWS::StackId}'
+      VersioningConfiguration:
+        Status: Enabled
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+
+  S3BucketMediaBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref 'S3BucketMedia'
+      PolicyDocument:
+        Statement:
+          - Action: s3:GetObject
+            Effect: Allow
+            Resource:
+              - !Sub 'arn:aws:s3:::${S3BucketMedia}/*'
+            Principal: '*'
+            Condition:
+              StringEquals:
+                aws:UserAgent: Amazon CloudFront
+                aws:Referer:
+                  - !Sub 'https://${WPSiteURL}/*'
+
+  Ec2LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub '${AWS::StackName}-LaunchTemplate'
+      LaunchTemplateData:
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: 10
+              VolumeType: gp2
+              DeleteOnTermination: true
+              Encrypted: true
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub '${AWS::StackName}'
+          - ResourceType: volume
+            Tags:
+              - Key: Name
+                Value: !Sub '${AWS::StackName}'
+        IamInstanceProfile: 
+          Arn: !GetAtt 'Ec2InstanceProfile.Arn'
+        KeyName: !Ref 'Ec2KeyName'
+        InstanceMarketOptions:
+          MarketType: spot
+        ImageId: !Ref 'Ec2ImageId'
+        InstanceType: !Ref 'Ec2InstanceType'
+        UserData: !Base64
+          Fn::Sub: |
+            #cloud-config
+            repo_update: true
+            repo_upgrade: all
+            packages:
+              - jq
+              - httpd
+            runcmd:
+              - yum update -y
+              # lamp-mariadb10.2-php7.2
+              - amazon-linux-extras install -y lamp-mariadb10.2-php7.2 php7.2
+              # mariadb
+              - yum install mariadb-server -y
+              - cp -b /root/cloud-init/mysql/my.cnf /etc/my.cnf
+              ## systemctl
+              - systemctl start mariadb
+              - systemctl enable mariadb
+              ## db-init
+              # httpd
+              ## xml,  mbstring , intl, mcrypt, gd
+              - yum install php-xml php-xmlrpc php-mbstring php-intl php-pecl-mcrypt php-xsl php-gd -y
+              ## keepalive
+              - cp /root/cloud-init/httpd/keepalive.conf /etc/httpd/conf.d/keepalive.conf
+              ## mod_http2 off
+              - sed -i -e "s/^LoadModule/#LoadModule/g" /etc/httpd/conf.modules.d/10-h2.conf
+              ## systemctl
+              - systemctl enable httpd
+              # WordPress
+              ## db-init
+              - [ sh, -c, "cat /root/cloud-init/mysql/wordpress-db.sql | mysql -u root" ]
+              - [ sh, -c, "cat /root/cloud-init/mysql/db-secure_installation.sql | mysql -u root" ]
+              - echo -e "[client]\npassword=\"${DbRootPassword}\"" > /root/.my.cnf
+              - chmod 400 /root/.my.cnf
+              ## wordpress.conf
+              - cp /root/cloud-init/httpd/wordpress.conf /etc/httpd/conf.d/
+              - systemctl restart httpd
+              ## wp-cli
+              - wget https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -P /tmp
+              - mv /tmp/wp-cli.phar /usr/local/bin/wp
+              - chmod +x /usr/local/bin/wp
+              ## wordpress install
+              - /usr/local/bin/wp core download --locale=ja --path=/var/www/wordpress
+              - [ sh, -c, "cd /root/cloud-init/wp-cli/; /usr/local/bin/wp core config" ]
+              - /usr/local/bin/wp core install --url=https://${WPSiteURL} --title=cm-wordpress-sample --admin_user=admin --admin_password=${WPAdminPassword} --admin_email=${WPAdminEmail} --path=/var/www/wordpress
+              - /usr/local/bin/wp --path=/var/www/wordpress rewrite structure '/%postname%.html'
+              - cp /root/cloud-init/httpd/.htaccess /var/www/wordpress/
+              ## s3 plugin
+              - [ sh, -c, "cd /root/cloud-init/wp-cli/; wp plugin install amazon-s3-and-cloudfront" ]
+              ## robots.txt
+              - cp /var/www/html/robots.txt /var/www/wordpress/
+              ## chown
+              - chown -R apache:apache /var/www/wordpress 
+              # nginx
+              - [ sh, -c, "amazon-linux-extras install -y nginx1.12"]
+              - mkdir -p /var/cache/nginx/
+              - cp /root/cloud-init/nginx/nginx.conf /etc/nginx/nginx.conf
+              - echo "${WPBasicAuthId}:{PLAIN}${WPBasicAuthPass}" > /etc/nginx/.htpasswd
+              - systemctl start nginx
+              - systemctl enable nginx
+              ## clean
+              - yum clean all
+
+            write_files:
+               # /etc/my.cnf |
+              - content: |
+                  [client-server]
+                  [mysqld]
+                  query_cache_type=1
+                  query_cache_size=32M
+                  character-set-server=utf8
+                  symbolic-links=0
+                  !includedir /etc/my.cnf.d
+                mode: '000600'
+                owner: root
+                group: root
+                path: /root/cloud-init/mysql/my.cnf
+              # mysql_secure_installation (substitution)
+              - content: |
+                  UPDATE mysql.user SET Password=PASSWORD('${DbRootPassword}') WHERE User='root';
+                  DELETE FROM mysql.user WHERE User='';
+                  DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
+                  DROP DATABASE test;
+                  DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
+                  FLUSH PRIVILEGES;
+                mode: '000600'
+                owner: root
+                group: root
+                path: /root/cloud-init/mysql/db-secure_installation.sql
+               # httpd
+              - content: |
+                  KeepAlive On
+                  KeepAliveTimeout 120
+                mode: '000644'
+                owner: root
+                group: root
+                path: /root/cloud-init/httpd/keepalive.conf
+               # robots.txt
+              - content: |
+                  User-agent: *
+                  Disallow: /
+                mode: '000644'
+                owner: root
+                group: root
+                path: /var/www/html/robots.txt
+               # wordpress_db
+              - content: |
+                  CREATE DATABASE IF NOT EXISTS ${WPDbName};
+                  GRANT USAGE ON ${WPDbName}.* to ${WPDbUser}@"%" IDENTIFIED BY '${WPDbPassword}';
+                  GRANT USAGE ON ${WPDbName}.* to ${WPDbUser}@"localhost" IDENTIFIED BY '${WPDbPassword}';
+                  GRANT ALL PRIVILEGES ON ${WPDbName}.* TO ${WPDbUser}@"%";
+                  GRANT ALL PRIVILEGES ON ${WPDbName}.* TO ${WPDbUser}@"localhost";
+                  FLUSH PRIVILEGES;
+                mode: '000600'
+                owner: root
+                group: root
+                path: /root/cloud-init/mysql/wordpress-db.sql
+              # wp-cli.yml
+              - content: |
+                  path: /var/www/wordpress
+                  url: https://${WPSiteURL}
+                  user: admin
+                  core download:
+                    locale: ja
+                  core config:
+                    dbuser: wordpress_user
+                    dbpass: ${WPDbPassword}
+                    dbname: wordpress_db
+                    dbhost: 127.0.0.1
+                    extra-php: |
+                      define( 'WP_DEBUG', false );
+                      define('WP_HOME', 'https://${WPSiteURL}');
+                      define('WP_SITEURL', 'https://${WPSiteURL}');
+                      $_SERVER['HTTPS'] = 'on';;
+                      define('WP_LANG', 'ja');
+                      define( 'AS3CF_AWS_USE_EC2_IAM_ROLE', true );
+                      if ( defined( 'WP_CLI' ) && WP_CLI && ! isset( $_SERVER['HTTP_HOST'] ) ) {$_SERVER['HTTP_HOST'] = '${WPSiteURL}';}
+                   core install:
+                      admin_user: admin
+                      url: https://${WPSiteURL}
+                      admin_password: ${WPAdminPassword}
+                      admin_email: ${WPAdminEmail}
+                      title: "cm-sample"
+                mode: '000644'
+                owner: root
+                group: root
+                path: /root/cloud-init/wp-cli/wp-cli.yml
+              # wordpress.conf
+              - content: |
+                  <VirtualHost *:80>
+                    DocumentRoot /var/www/wordpress
+                    ServerName ${WPSiteURL}
+                    <Directory /var/www/wordpress/>
+                      AllowOverride All
+                      Require all granted
+                    </Directory>
+                    RewriteEngine On
+                  </VirtualHost>
+                mode: '000644'
+                owner: root
+                group: root
+                path: /root/cloud-init/httpd/wordpress.conf
+              # .htaccess
+              - content: |
+                  <IfModule mod_rewrite.c>
+                    RewriteEngine On
+                    RewriteBase /
+                    RewriteRule ^index\.php$ - [L]
+                    RewriteCond %{REQUEST_FILENAME} !-f
+                    RewriteCond %{REQUEST_FILENAME} !-d
+                    RewriteRule . /index.php [L]
+                  </IfModule>
+                mode: '000644'
+                owner: root
+                group: root
+                path: /root/cloud-init/httpd/.htaccess
+
+              # nginx
+              - content: |
+                  user                    nginx;
+                  error_log               /var/log/nginx/error.log warn;
+                  pid                     /var/run/nginx.pid;
+                  worker_processes        auto;
+                  worker_rlimit_nofile    33192;
+                  events {
+                      worker_connections  1024;
+                  }
+                  http {
+                    port_in_redirect off;
+                    include       /etc/nginx/mime.types;
+                    default_type  application/octet-stream;
+                    log_format  main  $remote_addr - $remote_user [$time_local] "$request"
+                                      $status $body_bytes_sent "$http_referer"
+                                      "$http_user_agent" "$http_x_forwarded_for" "$upstream_cache_status" ;
+
+                    access_log  /var/log/nginx/access.log  main;
+                    sendfile        on;
+                    keepalive_timeout  65;
+
+                    # gzip on
+                    gzip              on;
+                    gzip_http_version 1.0;
+                    gzip_types        text/plain
+                      application/eot
+                      application/font
+                      application/font-sfnt
+                      application/javascript
+                      application/json
+                      application/opentype
+                      application/otf
+                      application/pkcs7-mime
+                      application/truetype
+                      application/ttf
+                      application/vnd.ms-fontobject
+                      application/x-font-opentype
+                      application/x-font-truetype
+                      application/x-font-ttf
+                      application/xhtml+xml
+                      application/x-httpd-cgi
+                      application/x-javascript
+                      application/xml
+                      application/xml+rss
+                      application/x-mpegurl
+                      application/x-opentype
+                      application/x-otf
+                      application/x-perl
+                      application/x-ttf
+                      font/eot
+                      font/opentype
+                      font/otf
+                      font/ttf
+                      image/svg+xml
+                      text/css
+                      text/csv
+                      text/javascript
+                      text/js
+                      text/richtext
+                      text/tab-separated-values
+                      text/x-component
+                      text/x-java-source
+                      text/xml
+                      text/x-script;
+                    gzip_disable      "MSIE [1-6]\.";
+                    gzip_disable      "Mozilla/4";
+                    gzip_comp_level   2;
+                    gzip_vary         on;
+                    gzip_proxied      any;
+                    gzip_buffers      4 8k;                    
+
+                    # upload size limit
+                    client_max_body_size     2m;
+
+                    # cache path
+                    proxy_cache_path /var/cache/nginx/static_file_cache levels=1:2 keys_zone=cache_static_file:256m inactive=7d max_size=2048m;
+                    proxy_temp_path /var/cache/nginx/temp;
+
+                    # default_server
+                    server {
+                      listen 50080 default_server;
+                      access_log  /var/log/nginx/http_access_50080.log  main;
+                      location / {
+                        return 404;
+                        break;
+                      }
+                    }
+                    server {
+                      listen 50081 default_server;
+                      access_log  /var/log/nginx/http_access_50081.log  main;
+                      ## for health check
+                      set $backend "127.0.0.1";
+                      location /wp-json/wp/v2/statuses/ {
+                        access_log off;
+                        proxy_cache cache_static_file;
+                        proxy_cache_key $scheme$host$uri$args;
+                        proxy_cache_valid 200 5m;
+                        proxy_cache_valid any 1m;
+                        proxy_pass http://$backend;
+                        break;
+                      }
+                      location / {
+                        return 404;
+                        break;
+                      }
+                    }
+                    server {
+                      listen 50082 default_server;
+                      access_log  /var/log/nginx/http_access_50082.log  main;
+                      ## HSTS
+                      add_header Strict-Transport-Security 'max-age=31536000; includeSubDomains';
+                      ## HTTP redirect to HTTPS
+                      if ($http_x_forwarded_proto = http) {
+                        return 301 https://$host$request_uri;
+                        break;
+                      }
+                      if ($scheme = http) {
+                        return 301 https://$host$request_uri;
+                        break;
+                      }
+                      location / {
+                        return 404;
+                        break;
+                      }
+                    }
+
+                    # wordpress (nocache,auth_basic)
+                    server {
+                      listen 50080;
+                      server_name ${WPSiteURL};
+                      access_log  /var/log/nginx/access_${WPSiteURL}_auth_basic.log  main;
+
+                      ## buffer
+                      client_header_buffer_size 128k;
+                      large_client_header_buffers 4 256k;
+                      proxy_buffering on;
+                      proxy_buffer_size          128k;
+                      proxy_buffers              4 256k;
+                      proxy_busy_buffers_size    256k;
+                      
+                      set $backend "127.0.0.1";
+                      set $proxyset_header_host "${WPSiteURL}";
+
+                      ## proxy_set_header
+                      proxy_redirect off;
+                      proxy_set_header Authorization "";
+                      proxy_set_header Host $proxyset_header_host;
+                      proxy_set_header X-Real-IP $remote_addr;
+                      proxy_set_header X-Forwarded-Host $host;
+                      proxy_set_header X-Forwarded-Server $host;
+                      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+                      location / {
+                        auth_basic "private";
+                        auth_basic_user_file /etc/nginx/.htpasswd;
+                        proxy_pass http://$backend;
+                        break;
+                      }
+                    }
+
+                    # wordpress (cache enable, x_pre_shared_key)
+                    server {
+                      listen 50081;
+                      server_name ${WPSiteURL};
+                      access_log  /var/log/nginx/access_${WPSiteURL}.log  main;
+
+                      ## Check Pre-shared key (CloudFront Nginx)
+                      if ($http_x_pre_shared_key != "${CfNginxPreSharedkey}") {
+                        return 403
+                        break;
+                      }
+
+                      ## HSTS
+                      add_header Strict-Transport-Security 'max-age=31536000; includeSubDomains';
+
+                      ## buffer
+                      client_header_buffer_size 128k;
+                      large_client_header_buffers 4 256k;
+                      proxy_buffering on;
+                      proxy_buffer_size          128k;
+                      proxy_buffers              4 256k;
+                      proxy_busy_buffers_size    256k;
+                      
+                      set $backend "127.0.0.1";
+                      set $proxyset_header_host "${WPSiteURL}";
+
+                      ## proxy_set_header
+                      proxy_redirect off;
+                      proxy_set_header Authorization "";
+                      proxy_set_header Host $proxyset_header_host;
+                      proxy_set_header X-Real-IP $remote_addr;
+                      proxy_set_header X-Forwarded-Host $host;
+                      proxy_set_header X-Forwarded-Server $host;
+                      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+                      location /wp-json/wp/v2/statuses/ {
+                        proxy_cache cache_static_file;
+                        proxy_cache_key $scheme$host$uri$args;
+                        proxy_cache_valid 200 5m;
+                        proxy_cache_valid any 1m;
+                        proxy_pass http://$backend;
+                        break;
+                      }
+                      ## UserAgent Check
+                      set $check_ua "";
+                      if ( $http_cloudfront_is_desktop_viewer = "true" ) {
+                        set $check_ua "${!check_ua}desktop";
+                      }
+                      if ( $http_cloudfront_is_mobile_viewer = "true" ) {
+                        set $check_ua "${!check_ua}mobile";
+                      }
+                      if ( $http_cloudfront_is_tablet_viewer = "true" ) {
+                        set $check_ua "${!check_ua}tablet";
+                      }
+                      if ( $http_cloudfront_is_smarttv_viewer = "true" ) {
+                        set $check_ua "${!check_ua}smarttv";
+                      }
+
+                      location / {
+                        if ( $uri ~ .*\.(jpeg|jpg|gif|png|ico|woff|css|js)$) {
+                          access_log off;
+                        }
+                        ### browser cache (add Expires header)
+                        expires 30m;
+                        ### proxy_cache
+                        proxy_cache cache_static_file;
+                        proxy_cache_key $scheme$host$uri$args$check_ua;
+                        proxy_cache_valid 200 5m;
+                        proxy_cache_valid any 1m;
+                        proxy_pass http://$backend;
+                        break;
+                      }
+                    }
+                  }
+                mode: '000644'
+                owner: root
+                group: root
+                path: /root/cloud-init/nginx/nginx.conf
+
+  Ec2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref 'Ec2LaunchTemplate'
+        Version: !GetAtt 'Ec2LaunchTemplate.LatestVersionNumber'
+      SubnetId: !Ref 'Ec2SubnetId'
+      SecurityGroupIds:
+        - !Ref 'Ec2SecurityGroup'
+
+  Ec2Eip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  Ec2EIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref 'Ec2Instance'
+      EIP: !Ref 'Ec2Eip'
+
+  Ec2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+
+  Ec2RolePolicies:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: Ec2RolePolicies
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - s3:List*
+          Resource:
+          - '*'
+        - Effect: Allow
+          Action:
+          - s3:Put*
+          - s3:Get*
+          - s3:Delete*
+          Resource:
+            - !Sub 'arn:aws:s3:::${S3BucketMedia}/*'
+      Roles:
+      - !Ref 'Ec2Role'
+
+  Ec2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref 'Ec2Role'
+
+  Ec2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VpcId'
+      GroupDescription: !Sub '${AWS::StackName}-for-ec2'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref 'AllowIp'
+        - IpProtocol: tcp
+          FromPort: 50080
+          ToPort: 50080
+          CidrIp: !Ref 'AllowIp'
+        - IpProtocol: tcp
+          FromPort: 50081
+          ToPort: 50082
+          CidrIp: '0.0.0.0/0'
+      Tags:
+        - Key: StackId
+          Value: !Sub '${AWS::StackId}'
+
+  NlbEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NlbLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    DependsOn: NlbEIP
+    Properties:
+      SubnetMappings:
+        - AllocationId: !GetAtt 'NlbEIP.AllocationId'
+          SubnetId: !Ref 'Ec2SubnetId'
+      Tags:
+        - Key: StackId
+          Value: !Sub '${AWS::StackId}'
+      Type: network
+
+  NlbTargetGroup1:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckPort: 50081
+      Port: 50080
+      Protocol: TCP
+      Tags:
+        - Key: StackId
+          Value: !Sub '${AWS::StackId}'
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '20'
+      Targets:
+        - Id: !Ref 'Ec2Instance'
+      VpcId: !Ref 'VpcId'
+
+  NlbTargetGroup2:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Port: 50081
+      Protocol: TCP
+      Tags:
+        - Key: StackId
+          Value: !Sub '${AWS::StackId}'
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '20'
+      Targets:
+        - Id: !Ref 'Ec2Instance'
+      VpcId: !Ref 'VpcId'
+
+  NlbTargetGroup3:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Port: 50082
+      Protocol: TCP
+      Tags:
+        - Key: StackId
+          Value: !Sub '${AWS::StackId}'
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '20'
+      Targets:
+        - Id: !Ref 'Ec2Instance'
+      VpcId: !Ref 'VpcId'
+
+  NlbListenerHTTPS1:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref 'NlbTargetGroup1'
+      LoadBalancerArn: !Ref 'NlbLoadBalancer'
+      Port: '443'
+      Protocol: TLS
+      Certificates:
+        - CertificateArn: !Ref 'AcmArnRegional'
+
+  NlbListenerHTTPS2:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref 'NlbTargetGroup2'
+      LoadBalancerArn: !Ref 'NlbLoadBalancer'
+      Port: '50443'
+      Protocol: TLS
+      Certificates:
+        - CertificateArn: !Ref 'AcmArnRegional'
+
+  NlbListenerHTTP:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref 'NlbTargetGroup3'
+      LoadBalancerArn: !Ref 'NlbLoadBalancer'
+      Port: '80'
+      Protocol: TCP
+
+  Route53RecordSetElb:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Sub '${DomainName}.'
+      Comment: !Sub '${AWS::StackName} elb'
+      Name: !Sub '${WPSiteURL}.'
+      Type: A
+      AliasTarget:
+        HostedZoneId: 'Z2FDTNDATAQYW2'
+        DNSName: !GetAtt 'CloudFrontDistributionElb.DomainName'
+
+  Route53RecordSetMedia:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Sub '${DomainName}.'
+      Comment: !Sub '${AWS::StackName}-s3-media'
+      Name: !Sub '${HostnamePrefix}-media.${DomainName}.'
+      Type: A
+      AliasTarget:
+        HostedZoneId: 'Z2FDTNDATAQYW2'
+        DNSName: !GetAtt 'CloudFrontDistributionMedia.DomainName'
+
+  Route53HealthCheckWPSite:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        FailureThreshold: 5
+        IPAddress: !Ref 'Ec2Eip'
+        Port: '50081'
+        Regions:
+          - ap-northeast-1
+          - ap-southeast-1
+          - us-west-2
+        RequestInterval: '30'
+        ResourcePath: /wp-json/wp/v2/statuses/
+        Type: HTTP
+      HealthCheckTags:
+        - Key: SampleKey1
+          Value: !Sub '${WPSiteURL}'
