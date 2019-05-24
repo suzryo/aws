@@ -58,7 +58,7 @@ Parameters:
   DomainName:
     Description: Domains in Route53 hostedzone
     Type: String
-    Default: ''
+    Default: 'example.com'
   Ec2SubnetId:
     Description: Subnet IDs
     Type: AWS::EC2::Subnet::Id
@@ -70,11 +70,11 @@ Parameters:
   WPSiteURL:
     Description: WordPress FQDN (WP_HOME,WP_SITEURL)
     Type: String
-    Default: ''
+    Default: 'wp-sample6.example.com'
   HostnamePrefix:
     Description: Host name Prefix (S3Buket,CloudFront CNAME)
     Type: String
-    Default: wp
+    Default: wp-sample6
 
   Ec2KeyName:
     Description: EC2 SSH KEY
@@ -163,9 +163,12 @@ Resources:
             Headers:
               - Host
               - Origin
+              - Accept-Encoding
               - CloudFront-Is-Desktop-Viewer
               - CloudFront-Is-Mobile-Viewer
               - CloudFront-Is-Tablet-Viewer
+              - CloudFront-Is-SmartTV-Viewer
+              - CloudFront-Viewer-Country
             Cookies:
               Forward: whitelist
               WhitelistedNames:
@@ -211,12 +214,14 @@ Resources:
               Headers:
                 - Host
                 - Origin
+                - Accept-Encoding
                 - Access-Control-Request-Headers
                 - Access-Control-Request-Method
                 - CloudFront-Is-Desktop-Viewer
                 - CloudFront-Is-Mobile-Viewer
                 - CloudFront-Is-Tablet-Viewer
                 - CloudFront-Is-SmartTV-Viewer
+                - CloudFront-Viewer-Country
             DefaultTTL: 300
             MaxTTL: 3600
             MinTTL: 0
@@ -238,12 +243,14 @@ Resources:
               Headers:
                 - Host
                 - Origin
+                - Accept-Encoding
                 - Access-Control-Request-Headers
                 - Access-Control-Request-Method
                 - CloudFront-Is-Desktop-Viewer
                 - CloudFront-Is-Mobile-Viewer
                 - CloudFront-Is-Tablet-Viewer
                 - CloudFront-Is-SmartTV-Viewer
+                - CloudFront-Viewer-Country
             DefaultTTL: 300
             MaxTTL: 3600
             MinTTL: 0
@@ -269,12 +276,14 @@ Resources:
               Headers:
                 - Host
                 - Origin
+                - Accept-Encoding
                 - Access-Control-Request-Headers
                 - Access-Control-Request-Method
                 - CloudFront-Is-Desktop-Viewer
                 - CloudFront-Is-Mobile-Viewer
                 - CloudFront-Is-Tablet-Viewer
                 - CloudFront-Is-SmartTV-Viewer
+                - CloudFront-Viewer-Country
               Cookies:
                 Forward: whitelist
                 WhitelistedNames:
@@ -786,14 +795,6 @@ Resources:
                       proxy_set_header X-Forwarded-Server $host;
                       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 
-                      location /wp-json/wp/v2/statuses/ {
-                        proxy_cache cache_static_file;
-                        proxy_cache_key $scheme$host$uri$args;
-                        proxy_cache_valid 200 5m;
-                        proxy_cache_valid any 1m;
-                        proxy_pass http://$backend;
-                        break;
-                      }
                       ## UserAgent Check
                       set $check_ua "";
                       if ( $http_cloudfront_is_desktop_viewer = "true" ) {
@@ -875,6 +876,7 @@ Resources:
         - Effect: Allow
           Action:
           - s3:List*
+          - s3:GetBucketLocation*
           Resource:
           - '*'
         - Effect: Allow
@@ -1034,21 +1036,3 @@ Resources:
       AliasTarget:
         HostedZoneId: 'Z2FDTNDATAQYW2'
         DNSName: !GetAtt 'CloudFrontDistributionMedia.DomainName'
-
-  Route53HealthCheckWPSite:
-    Type: AWS::Route53::HealthCheck
-    Properties:
-      HealthCheckConfig:
-        FailureThreshold: 5
-        IPAddress: !Ref 'Ec2Eip'
-        Port: '50081'
-        Regions:
-          - ap-northeast-1
-          - ap-southeast-1
-          - us-west-2
-        RequestInterval: '30'
-        ResourcePath: /wp-json/wp/v2/statuses/
-        Type: HTTP
-      HealthCheckTags:
-        - Key: SampleKey1
-          Value: !Sub '${WPSiteURL}'
