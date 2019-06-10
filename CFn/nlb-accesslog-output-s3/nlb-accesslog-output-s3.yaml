@@ -1,0 +1,198 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: NLB(ELB) enabled access log output to S3
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: VPC
+        Parameters:
+          - VpcId
+          - ElbSubnetId1
+          - ElbSubnetId2
+      - Label:
+          default: ELB
+        Parameters:
+          - AcmArnRegional
+Mappings:
+  S3Config:
+    us-east-1:
+      BucketPrincipal: '127311923021'
+    us-east-2:
+      BucketPrincipal: '033677994240'
+    us-west-1:
+      BucketPrincipal: '027434742980'
+    us-west-2:
+      BucketPrincipal: '797873946194'
+    ca-central-1:
+      BucketPrincipal: '985666609251'
+    eu-central-1:
+      BucketPrincipal: '054676820928'
+    eu-west-1:
+      BucketPrincipal: '156460612806'
+    eu-west-2:
+      BucketPrincipal: '652711504416'
+    eu-west-3:
+      BucketPrincipal: '009996457667'
+    eu-north-1:
+      BucketPrincipal: '897822967062'
+    ap-east-1:
+      BucketPrincipal: '754344448648'
+    ap-northeast-1:
+      BucketPrincipal: '582318560864'
+    ap-northeast-2:
+      BucketPrincipal: '600734575887'
+    ap-northeast-3:
+      BucketPrincipal: '383597477331'
+    ap-southeast-1:
+      BucketPrincipal: '114774131450'
+    ap-southeast-2:
+      BucketPrincipal: '783225319266'
+    ap-south-1:
+      BucketPrincipal: '718504428378'
+    sa-east-1:
+      BucketPrincipal: '507241528517'
+    us-gov-west-1:
+      BucketPrincipal: '048591011584'
+    us-gov-east-1:
+      BucketPrincipal: '190560391635'
+    cn-north-1:
+      BucketPrincipal: '638102146993'
+    cn-northwest-1:
+      BucketPrincipal: '037604701340'
+
+Parameters:
+
+  AcmArnRegional:
+    Description: SSL certificate for ELB
+    Type: String
+    Default: 'arn:aws:acm:ap-northeast-1:000000000000:certificate/000-000-000-000'
+  VpcId:
+    Description: VPC ID
+    Type: AWS::EC2::VPC::Id
+    Default: ''
+  ElbSubnetId1:
+    Description: Subnet IDs
+    Type: AWS::EC2::Subnet::Id
+    Default: ''
+  ElbSubnetId2:
+    Description: Subnet IDs
+    Type: AWS::EC2::Subnet::Id
+    Default: ''
+
+Resources:
+
+  S3BucketLogs:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: !Sub 'nlb-accesslogs-${AWS::Region}-${AWS::AccountId}'
+      LifecycleConfiguration:
+        Rules:
+          - Id: AutoDelete
+            Status: Enabled
+            ExpirationInDays: 14
+          - Id: NoncurrentVersionExpiration
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 7
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: StackId
+          Value: !Sub '${AWS::StackId}'
+      VersioningConfiguration:
+        Status: Enabled
+
+  S3BucketLogsPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref 'S3BucketLogs'
+      PolicyDocument:
+        Id: ElblogsBucketPolicy
+        Statement:
+          - Sid: AddPerm
+            Effect: Allow
+            Action:
+              - s3:PutObject
+            Resource:
+              - !Sub 'arn:aws:s3:::${S3BucketLogs}/*'
+            Principal:
+              AWS: !FindInMap
+                - S3Config
+                - !Ref 'AWS::Region'
+                - BucketPrincipal
+          - Sid: AWSLogDeliveryWrite
+            Effect: Allow
+            Action:
+              - s3:PutObject
+            Resource:
+              - !Sub 'arn:aws:s3:::${S3BucketLogs}/*'
+            Principal:
+              Service: delivery.logs.amazonaws.com
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+          - Sid: AWSLogDeliveryAclCheck
+            Effect: Allow
+            Action:
+              - s3:GetBucketAcl
+            Resource:
+              - !Sub 'arn:aws:s3:::${S3BucketLogs}'
+            Principal:
+              Service: delivery.logs.amazonaws.com
+
+  NlbEIP1:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  NlbEIP2:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  NlbLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    DependsOn: NlbEIP2
+    Properties:
+      LoadBalancerAttributes:
+        - Key: access_logs.s3.enabled
+          Value: true
+        - Key: access_logs.s3.bucket
+          Value: !Ref 'S3BucketLogs'
+        - Key: access_logs.s3.prefix
+          Value: !Sub 'nlb/${AWS::StackName}'
+      SubnetMappings:
+        - AllocationId: !GetAtt 'NlbEIP1.AllocationId'
+          SubnetId: !Ref 'ElbSubnetId1'
+        - AllocationId: !GetAtt 'NlbEIP2.AllocationId'
+          SubnetId: !Ref 'ElbSubnetId2'
+      Tags:
+        - Key: StackId
+          Value: !Sub '${AWS::StackId}'
+      Type: network
+
+  NlbTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Port: 80
+      Protocol: TCP
+      Tags:
+        - Key: StackId
+          Value: !Sub '${AWS::StackId}'
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '20'
+      VpcId: !Ref 'VpcId'
+
+  NlbListenerHTTPS:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref 'NlbTargetGroup'
+      LoadBalancerArn: !Ref 'NlbLoadBalancer'
+      Port: '443'
+      Protocol: TLS
+      Certificates:
+        - CertificateArn: !Ref 'AcmArnRegional'
