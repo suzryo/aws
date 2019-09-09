@@ -1,10 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: ALB access log to JSON , ELB 5XX to CWlogs
-Parameters:
-  FirehoseExpiredate:
-    Description: Number of days to keep S3 file (Firehose)
-    Type: String
-    Default: 7
 Resources:
   S3bucketAccesslog:
     DependsOn: LambdaInvokePermission
