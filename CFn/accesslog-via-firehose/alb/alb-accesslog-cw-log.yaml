@@ -1,0 +1,209 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: ALB access log to JSON , ELB 5XX to CWlogs
+Parameters:
+  FirehoseExpiredate:
+    Description: Number of days to keep S3 file (Firehose)
+    Type: String
+    Default: 7
+Resources:
+  S3bucketAccesslog:
+    DependsOn: LambdaInvokePermission
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-s3-accesslog-${AWS::Region}-${AWS::AccountId}"
+      LifecycleConfiguration:
+        Rules:
+          - Id: AutoDelete
+            Status: Enabled
+            ExpirationInDays: 1
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Function: !GetAtt "LambdaFunction.Arn"
+            Event: s3:ObjectCreated:*
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt "LambdaFunction.Arn"
+      Action: lambda:InvokeFunction
+      Principal: "s3.amazonaws.com"
+      SourceAccount: !Ref "AWS::AccountId"
+      SourceArn: !Sub "arn:aws:s3:::${AWS::StackName}-s3-accesslog-${AWS::Region}-${AWS::AccountId}"
+  LogGroupLambda:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${LambdaFunction}"
+      RetentionInDays: 7
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub "arn:aws:s3:::${AWS::StackName}-s3-accesslog-${AWS::Region}-${AWS::AccountId}/*"
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeNetworkInterfaces
+                Resource: "*"
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt "LambdaRole.Arn"
+      Code:
+        ZipFile: !Sub |
+
+          import json
+          import re
+          from datetime import datetime
+          import boto3
+          import os
+          import urllib.parse
+          import gzip
+          
+          s3 = boto3.client('s3')
+          ec2 = boto3.client('ec2')
+
+          firehose = boto3.client('firehose')
+          
+          RE_TEXT = r"""
+            ^(?P<type>[^ ]*)\u0020
+            (?P<time>[^ ]*)\u0020
+            (?P<elb>[^ ]*)\u0020
+            (?P<client_ip>[^ ]*):(?P<client_port>[0-9]*)\u0020
+            (?P<target_ip>[^ ]*)[:-](?P<target_port>[0-9]*)\u0020
+            (?P<request_processing_time>[-.0-9]*)\u0020
+            (?P<target_processing_time>[-.0-9]*)\u0020
+            (?P<response_processing_time>[-.0-9]*)\u0020
+            (?P<elb_status_code>|[-0-9]*)\u0020
+            (?P<target_status_code>-|[-0-9]*)\u0020
+            (?P<received_bytes>[-0-9]*)\u0020
+            (?P<sent_bytes>[-0-9]*)\u0020
+            \"(?P<request_method>[^ ]*)\u0020
+            (?P<request_url>[^ ]*)\u0020
+            (?P<request_http_version>- |[^ ]*)\"\u0020
+            \"(?P<user_agent>[^\"]*)\"\u0020
+            (?P<ssl_cipher>[A-Z0-9-]+)\u0020
+            (?P<ssl_protocol>[A-Za-z0-9.-]*)\u0020
+            (?P<target_group_arn>[^ ]*)\u0020
+            \"(?P<trace_id>[^\"]*)\"\u0020
+            \"(?P<domain_name>[^\"]*)\"\u0020
+            \"(?P<chosen_cert_arn>[^\"]*)\"\u0020
+            (?P<matched_rule_priority>[-.0-9]*)\u0020
+            (?P<request_creation_time>[^ ]*)\u0020
+            \"(?P<actions_executed>[^\"]*)\"\u0020
+            \"(?P<redirect_url>[^\"]*)\"\u0020
+            \"(?P<error_reason>[^\"]*)\"
+            (?P<new_field>.*)
+            """
+          
+          RE_FORMAT = re.compile(RE_TEXT, flags=re.VERBOSE)
+                  
+          def lambda_handler(event, context):
+            bucket = event['Records'][0]['s3']['bucket']['name']
+            s3key = urllib.parse.unquote_plus(event['Records'][0]['s3']['object']['key'], encoding='utf-8')
+
+            x = get_object(bucket,s3key)
+            y = get_elb_listener_info(s3key)
+            z = parse_alb_log(x,y)
+
+            for a in z:
+              # new_field check
+              if len(a["new_field"]) > 0:
+                print(json.dumps(a))
+              else:
+                a.pop("new_field")
+
+              # elb 5xx error
+              if a["elb_status_code"][0:1] == '5':
+                if not a["target_status_code"][0:1] == '5':
+                  print(json.dumps(a))
+
+              # elb 4xx error
+              if a["elb_status_code"][0:1] == '4':
+                if not a["target_status_code"][0:1] == '4':
+                  print(json.dumps(a))
+
+          def get_object(s3bucket,s3key):
+            a = s3.get_object(Bucket=s3bucket, Key=s3key)
+            b = gzip.decompress(a['Body'].read()).decode('utf-8').splitlines()
+            return b
+
+          def get_elb_listener_info(s3key):
+            try:
+              elb_listener_ip = s3key.split('_')[-2]
+            except:
+              elb_listener_ip = ''
+
+            d = {}
+            d["elb_availabilityzone"] = '-'
+            d["elb_private_ip"] = '-'
+            d["elb_listener_ip"] = '-'
+
+            if len(elb_listener_ip) > 4:
+              d["elb_listener_ip"] = elb_listener_ip
+              # public
+              r = ec2.describe_network_interfaces(
+                Filters=[{'Name':'association.public-ip','Values':[elb_listener_ip]}]
+              )
+              # internal
+              if r["NetworkInterfaces"] == []: 
+                r = ec2.describe_network_interfaces(
+                Filters=[{'Name':'private-ip-address','Values':[elb_listener_ip]}]
+              )
+              # ipv6
+              if r["NetworkInterfaces"] == []: 
+                r = ec2.describe_network_interfaces(
+                Filters=[{'Name':'ipv6-addresses.ipv6-address','Values':[elb_listener_ip]}]
+              )
+              if ("NetworkInterfaces" in r):
+                if len(r["NetworkInterfaces"]) > 0:
+                  if ("AvailabilityZone" in r["NetworkInterfaces"][0]):
+                    d["elb_availabilityzone"] = r["NetworkInterfaces"][0]["AvailabilityZone"]
+                  if ("PrivateIpAddress" in r["NetworkInterfaces"][0]):
+                    d["elb_private_ip"] = r["NetworkInterfaces"][0]["PrivateIpAddress"]
+
+            return d
+          
+          def parse_alb_log(log_data,elb_info):
+            l = []
+            for c in log_data:
+              b = RE_FORMAT.match(c.rstrip("\n"))
+              if b:
+                a = b.groupdict()
+                # timestamp
+                a["timestamp"] = datetime.strptime(a["time"], "%Y-%m-%dT%H:%M:%S.%fZ").strftime('%Y-%m-%dT%H:%M:%S')
+                # elb_listener_info
+                a.update(elb_info)
+                l.append(a)          
+            return l
+
+      Runtime: python3.7
+      MemorySize: 128
+      Timeout: 300
+      Description: Convert S3 access log 5XX to JSON and output to CloudWatchLogs
+      Tags:
+        - Key: CloudformationArn
+          Value: !Ref "AWS::StackId"
