@@ -1,0 +1,367 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ALB access log Lamnda (firehose), Firehose(parquet)
+Parameters:
+  GlueDbName:
+    Type: String
+    Default: kdf
+    Description: Glue DB name
+  GlueTableName:
+    Type: String
+    Default: alblog
+    Description: Glue Table name
+
+Resources:
+  # Glue
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref 'AWS::AccountId'
+      DatabaseInput:
+        Name: !Sub '${GlueDbName}'
+  GlueTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref 'AWS::AccountId'
+      DatabaseName: !Ref 'GlueDatabase'
+      TableInput:
+        Name: !Sub '${GlueTableName}'
+        Owner: owner
+        Retention: 0
+        StorageDescriptor:
+          Columns:
+            - Name: type
+              Type: string
+            - Name: time
+              Type: string
+            - Name: elb
+              Type: string
+            - Name: client_ip
+              Type: string
+            - Name: client_port
+              Type: string
+            - Name: target_ip
+              Type: string
+            - Name: target_port
+              Type: string
+            - Name: request_processing_time
+              Type: double
+            - Name: target_processing_time
+              Type: double
+            - Name: response_processing_time
+              Type: double
+            - Name: elb_status_code
+              Type: string
+            - Name: target_status_code
+              Type: string
+            - Name: received_bytes
+              Type: bigint
+            - Name: sent_bytes
+              Type: bigint
+            - Name: request_verb
+              Type: string
+            - Name: request_url
+              Type: string
+            - Name: request_proto
+              Type: string
+            - Name: user_agent
+              Type: string
+            - Name: ssl_cipher
+              Type: string
+            - Name: ssl_protocol
+              Type: string
+            - Name: target_group_arn
+              Type: string
+            - Name: trace_id
+              Type: string
+            - Name: domain_name
+              Type: string
+            - Name: chosen_cert_arn
+              Type: string
+            - Name: matched_rule_priority
+              Type: string
+            - Name: request_creation_time
+              Type: string
+            - Name: actions_executed
+              Type: string
+            - Name: redirect_url
+              Type: string
+            - Name: lambda_error_reason
+              Type: string
+            - Name: new_field
+              Type: string
+            - Name: timestamp
+              Type: string
+          InputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat
+          Compressed: false
+          NumberOfBuckets: -1
+          Location: !Sub 's3://${S3bucketFirehose}/${GlueDbName}/${GlueTableName}/'
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe
+            Parameters:
+              serialization.format: '1'
+          BucketColumns: []
+          SortColumns: []
+          StoredAsSubDirectories: false
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          classification: parquet
+        PartitionKeys:
+          - Name: dt
+            Type: date
+          - Name: hour
+            Type: int
+
+  # S3
+  S3bucketFirehose:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-firehose-output-${AWS::Region}-${AWS::AccountId}'
+      LifecycleConfiguration:
+        Rules:
+          - Id: AutoDelete
+            Status: Enabled
+            ExpirationInDays: 14
+
+  # Firehose
+  DeliveryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ''
+            Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref 'AWS::AccountId'
+      Policies:
+        - PolicyName: firehose_delivery_policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:AbortMultipartUpload
+                  - s3:GetBucketLocation
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:ListBucketMultipartUploads
+                  - s3:PutObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::${S3bucketFirehose}'
+                  - !Sub 'arn:aws:s3:::${S3bucketFirehose}*'
+              - Effect: Allow
+                Action: glue:GetTableVersions
+                Resource: '*'
+              - Effect: Allow
+                Action: logs:PutLogEvents
+                Resource: '*'
+
+  Deliverystream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamType: DirectPut
+      ExtendedS3DestinationConfiguration:
+        RoleARN: !GetAtt 'DeliveryRole.Arn'
+        BucketARN: !Sub 'arn:aws:s3:::${S3bucketFirehose}'
+        Prefix: !Sub '${GlueDbName}/${GlueTableName}/dt=!{timestamp:YYYY}-!{timestamp:MM}-!{timestamp:dd}/hour=!{timestamp:HH}/'
+        ErrorOutputPrefix: !Sub '${GlueDbName}/${GlueTableName}-error/!{firehose:error-output-type}/dt=!{timestamp:YYYY}-!{timestamp:MM}-!{timestamp:dd}/hour=!{timestamp:HH}/'
+        BufferingHints:
+          SizeInMBs: 128
+          IntervalInSeconds: 60
+        CompressionFormat: UNCOMPRESSED
+        EncryptionConfiguration:
+          NoEncryptionConfig: NoEncryption
+        CloudWatchLoggingOptions:
+          Enabled: true
+          LogGroupName: !Sub 'kdf-${AWS::StackName}-${GlueDbName}-${GlueTableName}'
+          LogStreamName: S3Delivery
+        S3BackupMode: Disabled
+        DataFormatConversionConfiguration:
+          SchemaConfiguration:
+            CatalogId: !Ref 'AWS::AccountId'
+            RoleARN: !GetAtt 'DeliveryRole.Arn'
+            DatabaseName: !Ref 'GlueDatabase'
+            TableName: !Ref 'GlueTable'
+            Region: !Ref 'AWS::Region'
+            VersionId: LATEST
+          InputFormatConfiguration:
+            Deserializer:
+              OpenXJsonSerDe: {}
+          OutputFormatConfiguration:
+            Serializer:
+              ParquetSerDe: {}
+          Enabled: true
+
+  # Lambda
+  LogGroupLambda:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${LambdaFunction}'
+      RetentionInDays: 7
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - firehose:PutRecordBatch
+                Resource: '*'
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      ReservedConcurrentExecutions: 2
+      Role: !GetAtt 'LambdaRole.Arn'
+      Code:
+        ZipFile: !Sub |
+          import json
+          import re
+          from datetime import datetime
+          import boto3
+          import os
+          import urllib.parse
+          import gzip
+          
+          s3 = boto3.client('s3')
+          firehose = boto3.client('firehose')
+          
+          RE_TEXT = r"""
+            ^(?P<type>[^ ]*)\u0020
+            (?P<time>[^ ]*)\u0020
+            (?P<elb>[^ ]*)\u0020
+            (?P<client_ip>[^ ]*):(?P<client_port>[0-9]*)\u0020
+            (?P<target_ip>[^ ]*)[:-](?P<target_port>[0-9]*)\u0020
+            (?P<request_processing_time>[-.0-9]*)\u0020
+            (?P<target_processing_time>[-.0-9]*)\u0020
+            (?P<response_processing_time>[-.0-9]*)\u0020
+            (?P<elb_status_code>|[-0-9]*)\u0020
+            (?P<target_status_code>-|[-0-9]*)\u0020
+            (?P<received_bytes>[-0-9]*)\u0020
+            (?P<sent_bytes>[-0-9]*)\u0020
+            \"(?P<request_verb>[^ ]*)\u0020
+            (?P<request_url>[^ ]*)\u0020
+            (?P<request_proto>- |[^ ]*)\"\u0020
+            \"(?P<user_agent>[^\"]*)\"\u0020
+            (?P<ssl_cipher>[A-Z0-9-]+)\u0020
+            (?P<ssl_protocol>[A-Za-z0-9.-]*)\u0020
+            (?P<target_group_arn>[^ ]*)\u0020
+            \"(?P<trace_id>[^\"]*)\"\u0020
+            \"(?P<domain_name>[^\"]*)\"\u0020
+            \"(?P<chosen_cert_arn>[^\"]*)\"\u0020
+            (?P<matched_rule_priority>[-.0-9]*)\u0020
+            (?P<request_creation_time>[^ ]*)\u0020
+            \"(?P<actions_executed>[^\"]*)\"\u0020
+            \"(?P<redirect_url>[^\"]*)\"\u0020
+            \"(?P<error_reason>[^\"]*)\"
+            (?P<new_field>.*)
+            """
+          
+          RE_FORMAT = re.compile(RE_TEXT, flags=re.VERBOSE)
+                  
+          def lambda_handler(event, context):
+
+            a = event
+            b = parse_alb_log(a)
+            r = put_log_firehose(b)
+
+          def parse_alb_log(log_data):
+            l = []
+            for c in log_data:
+              b = RE_FORMAT.match(c.rstrip("\n"))
+              if b:
+                a = b.groupdict()
+
+                #timestamp (iso8601)
+                a["timestamp"] = datetime.strptime(a["time"], "%Y-%m-%dT%H:%M:%S.%fZ").strftime('%Y-%m-%dT%H:%M:%S')
+                #float
+                try:
+                  a["request_processing_time"] = float(a["request_processing_time"])
+                except:
+                  a.pop("request_processing_time")
+                try:
+                  a["target_processing_time"] = float(a["target_processing_time"])
+                except:
+                  a.pop("target_processing_time")
+                try:
+                  a["response_processing_time"] = float(a["response_processing_time"])
+                except:
+                  a.pop("response_processing_time")
+                #int
+                try:
+                  a["received_bytes"] = int(a["received_bytes"])
+                except:
+                  a.pop("received_bytes")
+                try:
+                  a["sent_bytes"] = int(a["sent_bytes"])
+                except:
+                  a.pop("sent_bytes")
+
+                l.append(a)
+            return l
+
+          def put_log_firehose(data):
+            s = os.environ['firehose_stream_name']
+            b = []
+
+            for a in data:
+              b.append({'Data': json.dumps(a) + "\n"})
+              if len(b) > 300 or len(str(b)) > 400000:
+                r = put_record_firehose(s,b)
+                b = []
+
+            if len(b) > 0:
+              r = put_record_firehose(s,b)
+
+          def put_record_firehose(s,d):
+            s = os.environ['firehose_stream_name']
+            r = firehose.put_record_batch(
+              DeliveryStreamName = s,
+              Records = d
+            )
+            if r['FailedPutCount'] > 0:
+              print (json.dumps(r))
+            if len(r['RequestResponses']) >0:
+              print ('SuccessRequest :' + str(len(r['RequestResponses'])))
+              #print (json.dumps(d))
+
+      Runtime: python3.7
+      MemorySize: 128
+      Timeout: 900
+      Description:  Convert ALB access log to JSON to Firehose (Parquet)
+      Environment:
+        Variables:
+          firehose_stream_name: !Ref 'Deliverystream'
+      Tags:
+        - Key: CloudformationArn
+          Value: !Ref 'AWS::StackId'
+
+
+#test event
+#["http 2018-07-02T22:23:00.186641Z app/my-loadbalancer/50dc6c495c0c9188 192.168.131.39:2817 10.0.0.1:80 0.000 0.001 0.000 200 200 34 366 \"GET http://www.example.com:80/ HTTP/1.1\" \"curl/7.46.0\" - - arn:aws:elasticloadbalancing:us-east-2:123456789012:targetgroup/my-targets/73e2d6bc24d8a067 \"Root=1-58337262-36d228ad5d99923122bbe354\" \"-\" \"-\" 0 2018-07-02T22:22:48.364000Z \"forward\" \"-\" \"-\"","h2 2018-07-02T22:23:00.186641Z app/my-loadbalancer/50dc6c495c0c9188 10.0.1.252:48160 10.0.0.66:9000 0.000 0.002 0.000 200 200 5 257 \"GET https://10.0.2.105:773/ HTTP/2.0\" \"curl/7.46.0\" ECDHE-RSA-AES128-GCM-SHA256 TLSv1.2 arn:aws:elasticloadbalancing:us-east-2:123456789012:targetgroup/my-targets/73e2d6bc24d8a067 \"Root=1-58337327-72bd00b0343d75b906739c42\" \"-\" \"-\" 1 2018-07-02T22:22:48.364000Z \"redirect\" \"https://example.com:80/\" \"-\"","https 2018-07-02T22:23:00.186641Z app/my-loadbalancer/50dc6c495c0c9188 192.168.131.39:2817 10.0.0.1:80 0.086 0.048 0.037 200 200 0 57 \"GET https://www.example.com:443/ HTTP/1.1\" \"curl/7.46.0\" ECDHE-RSA-AES128-GCM-SHA256 TLSv1.2 arn:aws:elasticloadbalancing:us-east-2:123456789012:targetgroup/my-targets/73e2d6bc24d8a067 \"Root=1-58337281-1d84f3d73c47ec4e58577259\" \"www.example.com\" \"arn:aws:acm:us-east-2:123456789012:certificate/12345678-1234-1234-1234-123456789012\" 1 2018-07-02T22:22:48.364000Z \"authenticate,forward\" \"-\" \"-\"","wss 2018-07-02T22:23:00.186641Z app/my-loadbalancer/50dc6c495c0c9188 10.0.0.140:44244 10.0.0.171:8010 0.000 0.001 0.000 101 101 218 786 \"GET https://10.0.0.30:443/ HTTP/1.1\" \"-\" ECDHE-RSA-AES128-GCM-SHA256 TLSv1.2 arn:aws:elasticloadbalancing:us-west-2:123456789012:targetgroup/my-targets/73e2d6bc24d8a067 \"Root=1-58337364-23a8c76965a2ef7629b185e3\" \"-\" \"-\" 1 2018-07-02T22:22:48.364000Z \"forward\" \"-\" \"-\"","http 2018-11-30T22:23:00.186641Z app/my-loadbalancer/50dc6c495c0c9188 192.168.131.39:2817 - 0.000 0.001 0.000 200 200 34 366 \"GET http://www.example.com:80/ HTTP/1.1\" \"curl/7.46.0\" - - arn:aws:elasticloadbalancing:us-east-2:123456789012:targetgroup/my-targets/73e2d6bc24d8a067 \"Root=1-58337364-23a8c76965a2ef7629b185e3\" \"-\" \"-\" 0 2018-11-30T22:22:48.364000Z \"forward\" \"-\" \"-\"","http 2018-11-30T22:23:00.186641Z app/my-loadbalancer/50dc6c495c0c9188 192.168.131.39:2817 - 0.000 0.001 0.000 502 - 34 366 \"GET http://www.example.com:80/ HTTP/1.1\" \"curl/7.46.0\" - - arn:aws:elasticloadbalancing:us-east-2:123456789012:targetgroup/my-targets/73e2d6bc24d8a067 \"Root=1-58337364-23a8c76965a2ef7629b185e3\" \"-\" \"-\" 0 2018-11-30T22:22:48.364000Z \"forward\" \"-\" \"LambdaInvalidResponse\""]
