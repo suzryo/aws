@@ -327,19 +327,18 @@ Resources:
             return l
 
           def put_log_firehose(data):
-            s = os.environ['firehose_stream_name']
             b = []
 
             for a in data:
               b.append({'Data': json.dumps(a) + "\n"})
               if len(b) > 300 or len(str(b)) > 400000:
-                r = put_record_firehose(s,b)
+                r = put_record_firehose(b)
                 b = []
 
             if len(b) > 0:
-              r = put_record_firehose(s,b)
+              r = put_record_firehose(b)
 
-          def put_record_firehose(s,d):
+          def put_record_firehose(d):
             s = os.environ['firehose_stream_name']
             r = firehose.put_record_batch(
               DeliveryStreamName = s,
