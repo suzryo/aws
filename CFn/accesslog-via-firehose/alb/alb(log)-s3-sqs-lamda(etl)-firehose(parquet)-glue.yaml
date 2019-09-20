@@ -1,0 +1,765 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ALB accesslog ETL S3, SQS, Lambda(sqs,s3-firehose,athena), Firehose(parquet)
+Parameters:
+  GlueDbName:
+    Type: String
+    Default: kdf
+    Description: Glue DB name
+  GlueTableName:
+    Type: String
+    Default: alblog
+    Description: Glue Table name
+
+Resources:
+  S3bucketAccesslog:
+    DependsOn: LambdaSqsInvokePermission
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-s3-accesslog-${AWS::Region}-${AWS::AccountId}'
+      LifecycleConfiguration:
+        Rules:
+          - Id: AutoDelete
+            Status: Enabled
+            ExpirationInDays: 3
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Function: !GetAtt 'LambdaSqsFunction.Arn'
+            Event: s3:ObjectCreated:*
+      VersioningConfiguration:
+        Status: Enabled
+
+  LambdaSqsInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt 'LambdaSqsFunction.Arn'
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !Sub 'arn:aws:s3:::${AWS::StackName}-s3-accesslog-${AWS::Region}-${AWS::AccountId}'
+
+  LogGroupSqsLambda:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${LambdaSqsFunction}'
+      RetentionInDays: 7
+
+  LambdaSqsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - sqs:*
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeNetworkInterfaces
+                Resource: '*'
+
+  SqsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      DelaySeconds: 1
+      VisibilityTimeout: 300
+      Tags:
+        - Key: CloudformationArn
+          Value: !Ref 'AWS::StackId'
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt 'SqsDeadLetterQueue.Arn'
+        maxReceiveCount: 10
+
+  SqsDeadLetterQueue:
+    Type: AWS::SQS::Queue
+
+  LambdaSqsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt 'LambdaSqsRole.Arn'
+      Code:
+        ZipFile: !Sub |
+          import json
+          import boto3
+          import os
+          import urllib.parse
+          import gzip
+          import re
+          
+          sqs = boto3.client('sqs')
+
+          def lambda_handler(event, context):
+            bucket = event['Records'][0]['s3']['bucket']['name']
+            s3key = urllib.parse.unquote_plus(event['Records'][0]['s3']['object']['key'], encoding='utf-8')
+
+            a = {}
+            a["bucket"] = bucket
+            a["s3key"] = s3key
+
+            elb_info = get_elb_listener_info(s3key)
+            a.update(elb_info)
+
+            r = put_message_sqs(a)
+
+          def get_elb_listener_info(s3key):
+            try:
+              elb_ip = s3key.split('_')[-2]
+              elb_region = s3key.split('/')[-1].split('_')[2]
+            except:
+              elb_ip = '-'
+
+            try:
+              elb_region = s3key.split('/')[-1].split('_')[2]
+              if not re.search("[a-z]+\-[a-z]+\-[0-9]" , elb_region):
+                elb_region = '-'
+            except:
+              elb_region = '-'
+
+            try:
+              elb_account = s3key.split('/')[-1].split('_')[0]
+              if not re.search("[0-9]+" , elb_region):
+                elb_account = '-'
+            except:
+              elb_account = '-'
+
+            d = {}
+            d["elb_availabilityzone"] = '-'
+            d["elb_private_ip"] = '-'
+            d["elb_listener_ip"] = elb_ip
+
+            if os.environ['aws_accountid'] == elb_account:
+              if len(elb_region) > 2:
+                if len(elb_ip) > 4:
+                  ec2 = boto3.client('ec2', region_name = elb_region)
+                  r = ec2.describe_network_interfaces(
+                    Filters=[{'Name':'association.public-ip','Values':[elb_ip]}]
+                  )
+                  if r["NetworkInterfaces"] == []: 
+                    r = ec2.describe_network_interfaces(
+                    Filters=[{'Name':'private-ip-address','Values':[elb_ip]}]
+                  )
+                  if r["NetworkInterfaces"] == []: 
+                    r = ec2.describe_network_interfaces(
+                    Filters=[{'Name':'ipv6-addresses.ipv6-address','Values':[elb_ip]}]
+                  )
+                  if ("NetworkInterfaces" in r):
+                    if len(r["NetworkInterfaces"]) > 0:
+                      if ("AvailabilityZone" in r["NetworkInterfaces"][0]):
+                        d["elb_availabilityzone"] = r["NetworkInterfaces"][0]["AvailabilityZone"]
+                      if ("PrivateIpAddress" in r["NetworkInterfaces"][0]):
+                        d["elb_private_ip"] = r["NetworkInterfaces"][0]["PrivateIpAddress"]
+
+            return d
+
+          def put_message_sqs(data):
+            q = os.environ['sqs_queue_url']
+            d = json.dumps(data)
+            r = sqs.send_message(QueueUrl = q, MessageBody = d)
+
+            print (d)
+            #print (r)
+            return r
+
+      Runtime: python3.7
+      MemorySize: 128
+      Timeout: 900
+      Description:  S3 key (ALB access log) to SQS
+      Environment:
+        Variables:
+          sqs_queue_url: !Ref 'SqsQueue'
+          aws_accountid: !Ref 'AWS::AccountId'
+
+      Tags:
+        - Key: CloudformationArn
+          Value: !Ref 'AWS::StackId'
+
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt 'LambdaFunction.Arn'
+      Action: lambda:InvokeFunction
+      Principal: sqs.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !GetAtt 'SqsQueue.Arn'
+
+  LambdaEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties: 
+      BatchSize: 1
+      EventSourceArn: !GetAtt 'SqsQueue.Arn'
+      FunctionName: !GetAtt 'LambdaFunction.Arn'
+
+  LogGroupLambda:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${LambdaFunction}'
+      RetentionInDays: 7
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - firehose:PutRecordBatch
+                Resource: !GetAtt 'Deliverystream.Arn'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub 'arn:aws:s3:::${AWS::StackName}-s3-accesslog-${AWS::Region}-${AWS::AccountId}/*'
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeNetworkInterfaces
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:ChangeMessageVisibility
+                Resource: !GetAtt 'SqsQueue.Arn'
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      ReservedConcurrentExecutions: 2
+      Role: !GetAtt 'LambdaRole.Arn'
+      Code:
+        ZipFile: !Sub |
+          import json
+          import re
+          from datetime import datetime
+          import boto3
+          import os
+          import urllib.parse
+          import gzip
+          
+          s3 = boto3.client('s3')
+          firehose = boto3.client('firehose')
+          
+          RE_TEXT = r"""
+            ^(?P<type>[^ ]*)\u0020
+            (?P<time>[^ ]*)\u0020
+            (?P<elb>[^ ]*)\u0020
+            (?P<client_ip>[^ ]*):(?P<client_port>[0-9]*)\u0020
+            (?P<target_ip>[^ ]*)[:-](?P<target_port>[0-9]*)\u0020
+            (?P<request_processing_time>[-.0-9]*)\u0020
+            (?P<target_processing_time>[-.0-9]*)\u0020
+            (?P<response_processing_time>[-.0-9]*)\u0020
+            (?P<elb_status_code>|[-0-9]*)\u0020
+            (?P<target_status_code>-|[-0-9]*)\u0020
+            (?P<received_bytes>[-0-9]*)\u0020
+            (?P<sent_bytes>[-0-9]*)\u0020
+            \"(?P<request_verb>[^ ]*)\u0020
+            (?P<request_url>[^ ]*)\u0020
+            (?P<request_proto>- |[^ ]*)\"\u0020
+            \"(?P<user_agent>[^\"]*)\"\u0020
+            (?P<ssl_cipher>[A-Z0-9-]+)\u0020
+            (?P<ssl_protocol>[A-Za-z0-9.-]*)\u0020
+            (?P<target_group_arn>[^ ]*)\u0020
+            \"(?P<trace_id>[^\"]*)\"\u0020
+            \"(?P<domain_name>[^\"]*)\"\u0020
+            \"(?P<chosen_cert_arn>[^\"]*)\"\u0020
+            (?P<matched_rule_priority>[-.0-9]*)\u0020
+            (?P<request_creation_time>[^ ]*)\u0020
+            \"(?P<actions_executed>[^\"]*)\"\u0020
+            \"(?P<redirect_url>[^\"]*)\"\u0020
+            \"(?P<error_reason>[^\"]*)\"
+            (?P<new_field>.*)
+            """
+          
+          RE_FORMAT = re.compile(RE_TEXT, flags=re.VERBOSE)
+                  
+          def lambda_handler(event, context):
+
+            b = json.loads(event['Records'][0]['body'])
+
+            bucket = b['bucket']
+            s3key = b['s3key']
+            b.pop("bucket")
+            b.pop("s3key")
+
+            x = get_object(bucket,s3key)
+            y = parse_alb_log(x,b)
+
+            for a in y:
+              if a["elb_status_code"][0:1] == '5':
+                if not a["target_status_code"][0:1] == '5':
+                  print(json.dumps(a))
+
+            r = put_log_firehose(y)
+
+
+          def get_object(s3bucket,s3key):
+            a = s3.get_object(Bucket=s3bucket, Key=s3key)
+            b = gzip.decompress(a['Body'].read()).decode('utf-8').splitlines()
+            return b
+          
+          def parse_alb_log(log_data,elb_info):
+            l = []
+            for c in log_data:
+              b = RE_FORMAT.match(c.rstrip("\n"))
+              if b:
+                a = b.groupdict()
+                a["timestamp"] = datetime.strptime(a["time"], "%Y-%m-%dT%H:%M:%S.%fZ").strftime('%Y-%m-%dT%H:%M:%S')
+                #float
+                a["request_processing_time"] = float(a["request_processing_time"])
+                a["target_processing_time"] = float(a["target_processing_time"])
+                a["response_processing_time"] = float(a["response_processing_time"])
+                #int
+                a["received_bytes"] = int(a["received_bytes"])
+                a["sent_bytes"] = int(a["sent_bytes"])
+                #elb_ip
+                a.update(elb_info)
+                l.append(a)
+            return l
+
+          def put_log_firehose(data):
+            s = os.environ['firehose_stream_name']
+            b = []
+
+            for a in data:
+              b.append({'Data': json.dumps(a) + "\n"})
+              if len(b) > 300 or len(str(b)) > 400000:
+                r = put_record_firehose(s,b)
+                b = []
+
+            if len(b) > 0:
+              r = put_record_firehose(s,b)
+
+          def put_record_firehose(s,d):
+            r = firehose.put_record_batch(
+              DeliveryStreamName = s,
+              Records = d
+            )
+            if r['FailedPutCount'] > 0:
+              print (json.dumps(r))
+            if len(r['RequestResponses']) >0:
+              print ('SuccessRequest :' + str(len(r['RequestResponses'])))
+
+      Runtime: python3.7
+      MemorySize: 128
+      Timeout: 900
+      Description:  Convert ALB access log to JSON to Firehose (Parquet)
+      Environment:
+        Variables:
+          firehose_stream_name: !Ref 'Deliverystream'
+      Tags:
+        - Key: CloudformationArn
+          Value: !Ref 'AWS::StackId'
+
+  Deliverystream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamType: DirectPut
+      ExtendedS3DestinationConfiguration:
+        RoleARN: !GetAtt 'DeliveryRole.Arn'
+        BucketARN: !Sub 'arn:aws:s3:::${S3bucketFirehose}'
+        Prefix: !Sub '${AWS::StackName}${GlueDbName}/${GlueTableName}/dt=!{timestamp:YYYY}-!{timestamp:MM}-!{timestamp:dd}/hour=!{timestamp:HH}/'
+        ErrorOutputPrefix: !Sub '${AWS::StackName}${GlueDbName}/${GlueTableName}-error/!{firehose:error-output-type}/dt=!{timestamp:YYYY}-!{timestamp:MM}-!{timestamp:dd}/hour=!{timestamp:HH}/'
+        BufferingHints:
+          SizeInMBs: 128
+          IntervalInSeconds: 60
+        CompressionFormat: UNCOMPRESSED
+        EncryptionConfiguration:
+          NoEncryptionConfig: NoEncryption
+        CloudWatchLoggingOptions:
+          Enabled: true
+          LogGroupName: !Sub 'kdf-${AWS::StackName}-${GlueDbName}-${GlueTableName}'
+          LogStreamName: S3Delivery
+        S3BackupMode: Disabled
+        DataFormatConversionConfiguration:
+          SchemaConfiguration:
+            CatalogId: !Ref 'AWS::AccountId'
+            RoleARN: !GetAtt 'DeliveryRole.Arn'
+            DatabaseName: !Ref 'GlueDatabase'
+            TableName: !Ref 'GlueTable'
+            Region: !Ref 'AWS::Region'
+            VersionId: LATEST
+          InputFormatConfiguration:
+            Deserializer:
+              OpenXJsonSerDe: {}
+          OutputFormatConfiguration:
+            Serializer:
+              ParquetSerDe: {}
+          Enabled: true
+  DeliveryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ''
+            Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref 'AWS::AccountId'
+      Policies:
+        - PolicyName: firehose_delivery_policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:AbortMultipartUpload
+                  - s3:GetBucketLocation
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:ListBucketMultipartUploads
+                  - s3:PutObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::${S3bucketFirehose}'
+                  - !Sub 'arn:aws:s3:::${S3bucketFirehose}*'
+              - Effect: Allow
+                Action: glue:GetTableVersions
+                Resource: '*'
+              - Effect: Allow
+                Action: logs:PutLogEvents
+                Resource: '*'
+
+  S3bucketFirehose:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-firehose-output-${AWS::Region}-${AWS::AccountId}'
+      LifecycleConfiguration:
+        Rules:
+          - Id: AutoDelete
+            Status: Enabled
+            ExpirationInDays: 14
+
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref 'AWS::AccountId'
+      DatabaseInput:
+        Name: !Sub '${AWS::StackName}${GlueDbName}'
+  GlueTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref 'AWS::AccountId'
+      DatabaseName: !Ref 'GlueDatabase'
+      TableInput:
+        Name: !Sub '${GlueTableName}'
+        Owner: owner
+        Retention: 0
+        StorageDescriptor:
+          Columns:
+            - Name: type
+              Type: string
+            - Name: time
+              Type: string
+            - Name: elb
+              Type: string
+            - Name: client_ip
+              Type: string
+            - Name: client_port
+              Type: string
+            - Name: target_ip
+              Type: string
+            - Name: target_port
+              Type: string
+            - Name: request_processing_time
+              Type: double
+            - Name: target_processing_time
+              Type: double
+            - Name: response_processing_time
+              Type: double
+            - Name: elb_status_code
+              Type: string
+            - Name: target_status_code
+              Type: string
+            - Name: received_bytes
+              Type: bigint
+            - Name: sent_bytes
+              Type: bigint
+            - Name: request_verb
+              Type: string
+            - Name: request_url
+              Type: string
+            - Name: request_proto
+              Type: string
+            - Name: user_agent
+              Type: string
+            - Name: ssl_cipher
+              Type: string
+            - Name: ssl_protocol
+              Type: string
+            - Name: target_group_arn
+              Type: string
+            - Name: trace_id
+              Type: string
+            - Name: domain_name
+              Type: string
+            - Name: chosen_cert_arn
+              Type: string
+            - Name: matched_rule_priority
+              Type: string
+            - Name: request_creation_time
+              Type: string
+            - Name: actions_executed
+              Type: string
+            - Name: redirect_url
+              Type: string
+            - Name: lambda_error_reason
+              Type: string
+            - Name: new_field
+              Type: string
+            - Name: timestamp
+              Type: string
+            - Name: elb_availabilityzone
+              Type: string
+            - Name: elb_private_ip
+              Type: string
+            - Name: elb_listener_ip
+              Type: string
+          InputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat
+          Compressed: false
+          NumberOfBuckets: -1
+          Location: !Sub 's3://${S3bucketFirehose}/${AWS::StackName}${GlueDbName}/${GlueTableName}/'
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe
+            Parameters:
+              serialization.format: '1'
+          BucketColumns: []
+          SortColumns: []
+          StoredAsSubDirectories: false
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          classification: parquet
+        PartitionKeys:
+          - Name: dt
+            Type: date
+          - Name: hour
+            Type: int
+  LogGroupLambdaAddPartition:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${LambdaFunctionAddPartition}'
+      RetentionInDays: 7
+  LambdaRoleAddPartition:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonAthenaFullAccess
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:AbortMultipartUpload
+                  - s3:GetBucketLocation
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:ListBucketMultipartUploads
+                  - s3:PutObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::${S3bucketFirehose}'
+                  - !Sub 'arn:aws:s3:::${S3bucketFirehose}*'
+
+  LambdaFunctionAddPartition:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt 'LambdaRoleAddPartition.Arn'
+      Code:
+        ZipFile: !Sub |
+          from datetime import datetime
+          import boto3
+          import os
+
+          def lambda_handler(event, context):
+
+            dt = datetime.now().strftime("%Y-%m-%d")
+            hour = datetime.now().strftime("%H")
+
+            s3bucket = os.environ['s3bucket']
+            s3key = os.environ['s3key']
+            gluedb = os.environ['gluedb']
+            gluetable = os.environ['gluetable']
+
+            athena = boto3.client('athena')
+            sql = "ALTER TABLE " + gluetable + " ADD IF NOT EXISTS PARTITION (dt='" + dt + "',hour='" + hour + "') location 's3://" + s3bucket + "/" + gluedb + "/" + gluetable + "/dt=" + dt + "/hour=" + hour + "'"
+            print('sql:' + sql)
+
+            athena.start_query_execution(
+              QueryString= sql ,
+              QueryExecutionContext={
+                'Database': gluedb
+              },
+              ResultConfiguration={
+                'OutputLocation': 's3://' + s3bucket + '/athena-output' 
+              }
+            )
+      Runtime: python3.7
+      MemorySize: 128
+      Timeout: 300
+      Description: Automatic Athena partition addition (every hour)
+      Environment:
+        Variables:
+          s3bucket: !Ref 'S3bucketFirehose'
+          s3key: !Ref 'GlueTableName'
+          gluedb: !Sub '${AWS::StackName}${GlueDbName}'
+          gluetable: !Ref 'GlueTableName'
+      Tags:
+        - Key: CloudformationArn
+          Value: !Ref 'AWS::StackId'
+  ScheduledRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: ScheduledRule
+      ScheduleExpression: cron(1 * * * ? *)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt 'LambdaFunctionAddPartition.Arn'
+          Id: TargetFunctionV1
+  PermissionForEventsToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref 'LambdaFunctionAddPartition'
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt 'ScheduledRule.Arn'
+
+
+  AthenaNamedQuery1:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: !Ref 'GlueDatabase'
+      Description: alb accesslog view last 70min
+      Name: !Sub '${AWS::StackName}_accesslog_view_1h'
+      QueryString: !Sub 'CREATE OR REPLACE VIEW  alblog_1h AS SELECT * FROM ( SELECT
+        * FROM "${GlueDatabase}"."${GlueTableName}" WHERE dt = cast((current_timestamp
+        - INTERVAL ''1'' HOUR) AS date) AND hour = hour((current_timestamp - INTERVAL
+        ''1'' HOUR)) UNION ALL SELECT * FROM "${GlueDatabase}"."${GlueTableName}" WHERE
+        dt = cast(current_timestamp AS date) AND hour = hour(current_timestamp) )
+        WHERE from_iso8601_timestamp(timestamp) > (current_timestamp - INTERVAL ''70''
+        minute)'
+
+  AthenaNamedQuery2:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: !Ref 'GlueDatabase'
+      Description: Total processing_time by URL agent for the past 1h
+      Name: !Sub '${AWS::StackName}_processing_time_by_url'
+      QueryString: !Sub 'SELECT count(1) AS count_records, sum(target_processing_time)
+        AS sum_target_processing_time, avg(target_processing_time) AS avg_target_processing_time,
+        approx_percentile(target_processing_time, 0.50) AS target_processing_time_p50,
+        approx_percentile(target_processing_time, 0.90) AS target_processing_time_p90,
+        approx_percentile(target_processing_time, 0.95) AS target_processing_time_p95,
+        approx_percentile(target_processing_time, 0.99) AS target_processing_time_p99,
+        sum(received_bytes) AS sum_received_bytes, sum(sent_bytes) AS sum_sent_bytes,
+        request_url FROM alblog_1h GROUP BY request_url ORDER BY sum_target_processing_time
+        DESC limit 50'
+
+  AthenaNamedQuery3:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: !Ref 'GlueDatabase'
+      Description: Total processing_time by IP agent for the past 1h
+      Name: !Sub '${AWS::StackName}_processing_time_by_ip_ua'
+      QueryString: !Sub 'SELECT count(1) AS count_records, client_ip, sum(target_processing_time)
+        AS sum_target_processing_time, approx_percentile(target_processing_time, 0.50)
+        AS target_processing_time_p50, approx_percentile(target_processing_time, 0.90)
+        AS target_processing_time_p90, approx_percentile(target_processing_time, 0.99)
+        AS target_processing_time_p99, sum(received_bytes) AS sum_received_bytes,
+        sum(sent_bytes) AS sum_sent_bytes, user_agent FROM alblog_1h GROUP BY client_ip,
+        user_agent ORDER BY sum_target_processing_time DESC limit 50'
+
+  AthenaNamedQuery4:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: !Ref 'GlueDatabase'
+      Description: Total processing_time by minute for the past 1h
+      Name: !Sub '${AWS::StackName}_target_processing_records_by_min'
+      QueryString: !Sub 'SELECT count(1) AS count_records, date_trunc(''minute'',
+        from_iso8601_timestamp(timestamp)), sum(target_processing_time) AS sum_target_processing_time,
+        approx_percentile(target_processing_time, 0.50) AS target_processing_time_p50,
+        approx_percentile(target_processing_time, 0.90) AS target_processing_time_p90,
+        approx_percentile(target_processing_time, 0.99) AS target_processing_time_p99,
+        sum(received_bytes) AS sum_received_bytes, sum(sent_bytes) AS sum_sent_bytes
+        FROM alblog_1h GROUP BY date_trunc(''minute'', from_iso8601_timestamp(timestamp))
+        ORDER BY date_trunc(''minute'', from_iso8601_timestamp(timestamp)) limit 90'
+
+  AthenaNamedQuery5:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: !Ref 'GlueDatabase'
+      Description: Total processing_time by minute for the past 1h
+      Name: !Sub '${AWS::StackName}_only_count_records_by_min'
+      QueryString: !Sub 'SELECT count(1) AS count_records, date_trunc(''minute'',
+        from_iso8601_timestamp(timestamp)) FROM alblog_1h GROUP BY date_trunc(''minute'',
+        from_iso8601_timestamp(timestamp)) ORDER BY date_trunc(''minute'', from_iso8601_timestamp(timestamp))
+        limit 90'
+
+  AthenaNamedQuery6:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: !Ref 'GlueDatabase'
+      Description: ELB 5XX log count
+      Name: !Sub '${AWS::StackName}_only_count_records_by_min'
+      QueryString: !Sub 'SELECT elb_status_code, target_status_code, count(1) as row_count
+        FROM alblog_1h WHERE elb_status_code like ''5%'' group by elb_status_code,
+        target_status_code order by row_count'
