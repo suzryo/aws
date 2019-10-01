@@ -81,7 +81,7 @@ Resources:
     Type: AWS::SQS::Queue
     Properties:
       DelaySeconds: 1
-      VisibilityTimeout: 300
+      VisibilityTimeout: 950
       Tags:
         - Key: CloudformationArn
           Value: !Ref 'AWS::StackId'
