@@ -314,26 +314,25 @@ Resources:
 
             b = json.loads(event['Records'][0]['body'])
 
-            bucket = b['bucket']
+            s3bucket = b['bucket']
             s3key = b['s3key']
             b.pop("bucket")
             b.pop("s3key")
 
-            x = get_object(bucket,s3key)
-            y = parse_alb_log(x,b)
-
-            for a in y:
-              if a["elb_status_code"][0:1] == '5':
-                if not a["target_status_code"][0:1] == '5':
-                  print(json.dumps(a))
-
-            r = put_log_firehose(y)
-
-
-          def get_object(s3bucket,s3key):
-            a = s3.get_object(Bucket=s3bucket, Key=s3key)
-            b = gzip.decompress(a['Body'].read()).decode('utf-8').splitlines()
-            return b
+            c = s3.get_object(Bucket=s3bucket, Key=s3key)
+            d = gzip.decompress(c['Body'].read()).decode('utf-8').splitlines()
+   
+            f = []
+            for e in d:
+              f.append(e)
+              if len(f) > 1200:
+                h = parse_alb_log(f,b)
+                r = put_log_firehose(h)
+                f = []
+            if len(f) > 0:
+              h = parse_alb_log(f,b)
+              r = put_log_firehose(h)
+              f = []
           
           def parse_alb_log(log_data,elb_info):
             l = []
@@ -352,6 +351,11 @@ Resources:
                 #elb_ip
                 a.update(elb_info)
                 l.append(a)
+                #elb5xx
+                if a["elb_status_code"][0:1] == '5':
+                  if not a["target_status_code"][0:1] == '5':
+                    print(json.dumps(a))
+
             return l
 
           def put_log_firehose(data):
@@ -360,7 +364,7 @@ Resources:
 
             for a in data:
               b.append({'Data': json.dumps(a) + "\n"})
-              if len(b) > 300 or len(str(b)) > 400000:
+              if len(b) > 600 or len(str(b)) > 600000:
                 r = put_record_firehose(s,b)
                 b = []
 
@@ -378,7 +382,7 @@ Resources:
               print ('SuccessRequest :' + str(len(r['RequestResponses'])))
 
       Runtime: python3.7
-      MemorySize: 128
+      MemorySize: 3008
       Timeout: 900
       Description:  Convert ALB access log to JSON to Firehose (Parquet)
       Environment:
