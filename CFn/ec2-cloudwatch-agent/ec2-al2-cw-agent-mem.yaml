@@ -1,0 +1,175 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Ec2-al2-cloudwatch-agent
+Parameters:
+  Env:
+    Description: Choose the environment to create
+    Type: String
+    Default: development
+    AllowedValues:
+      - development
+      - staging
+      - production
+  VpcId:
+    Description: VPC ID
+    Type: AWS::EC2::VPC::Id
+  Ec2SubnetId:
+    Description: Subnet ID
+    Type: AWS::EC2::Subnet::Id
+  Ec2KeyName:
+    Description: Ec2 SSH KEY
+    Type: AWS::EC2::KeyPair::KeyName
+  Ec2ImageId:
+    Description: AMI ID
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+Resources:
+  Ec2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref 'VpcId'
+      GroupDescription: Ec2 SecurityGroup
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 127.0.0.1/32
+  Ec2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies: !Ref 'AWS::NoValue'
+      RoleName: !Ref 'AWS::NoValue'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  Ec2Policy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: Ec2RolePolicies
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Deny
+            Action:
+              - ssm:StartSession
+            Resource:
+              - '*'
+            Condition:
+              NotIpAddress:
+                aws:SourceIp:
+                  - 0.0.0.0/0
+                  - ::/0
+      Roles:
+        - !Ref 'Ec2Role'
+
+  Ec2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    DependsOn: Ec2Role
+    Properties:
+      Path: /
+      Roles:
+        - !Ref 'Ec2Role'
+  Ec2LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        SecurityGroupIds:
+          - !Ref 'Ec2SecurityGroup'
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Env
+                Value: !Ref 'Env'
+              - Key: Name
+                Value: !Sub '${AWS::StackName}'
+          - ResourceType: volume
+            Tags:
+              - Key: Env
+                Value: !Ref 'Env'
+              - Key: Name
+                Value: !Sub '${AWS::StackName}'
+        UserData: !Base64
+          Fn::Sub: |
+            #cloud-config
+            repo_update: true
+            repo_upgrade: all
+            packages:
+              - jq
+            runcmd:
+              - [ sh, -c, "dd if=/dev/zero of=/swapfile bs=1M count=512" ]
+              - [ sh, -c, "chmod 600 /swapfile; mkswap /swapfile; swapon /swapfile" ]
+              - [ sh, -c, "echo '/swapfile swap swap defaults 0 0' >> /etc/fstab" ]
+              - [ sh, -c, "rpm -Uvh https://s3.amazonaws.com/amazoncloudwatch-agent/amazon_linux/amd64/latest/amazon-cloudwatch-agent.rpm" ]
+              - /opt/aws/amazon-cloudwatch-agent/bin/config-translator --input /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json --output /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.toml --mode ec2
+              - /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a start
+            write_files:
+            - content: |
+                {
+                  "metrics": {
+                    "append_dimensions": {
+                      "ImageId": "${!aws:ImageId}",
+                      "InstanceId": "${!aws:InstanceId}",
+                      "InstanceType": "${!aws:InstanceType}"
+                    },
+                    "metrics_collected": {
+                      "mem": {
+                        "measurement": [
+                          "mem_used_percent"
+                        ],
+                        "metrics_collection_interval": 60
+                      },
+                      "swap": {
+                        "measurement": [
+                          "swap_used_percent"
+                        ],
+                        "metrics_collection_interval": 60
+                      }
+                    }
+                  }
+                }
+              mode: '000600'
+              owner: root
+              group: root
+              path: /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+        IamInstanceProfile:
+          Arn: !GetAtt 'Ec2InstanceProfile.Arn'
+        KeyName: !Ref 'Ec2KeyName'
+        ImageId: !Ref 'Ec2ImageId'
+        Monitoring:
+          Enabled: false
+        InstanceType: m5.large
+        InstanceMarketOptions:
+          MarketType: spot
+          SpotOptions: 
+            InstanceInterruptionBehavior: terminate
+            SpotInstanceType: one-time
+
+  Ec2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref 'Ec2LaunchTemplate'
+        Version: !GetAtt 'Ec2LaunchTemplate.LatestVersionNumber'
+      SubnetId: !Ref 'Ec2SubnetId'
+      SecurityGroupIds:
+        - !Ref 'Ec2SecurityGroup'
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}'
+
+
+
+
+
+
+
+
