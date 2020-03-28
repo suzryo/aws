@@ -1,0 +1,211 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: S3 static website (S3, CloudFront, IAM role)
+
+Parameters:
+  IamUserArn:
+    Description: IAM user ARN (S3 access)
+    Type: String
+    Default: arn:aws:iam::000000000000:user/dummy
+Conditions:
+  IsS3RoleEnable: !Not
+    - !Equals
+      - !Ref 'IamUserArn'
+      - arn:aws:iam::000000000000:user/dummy
+
+Resources:
+# --------------------------------------------- #
+# S3 Bucket (webhosting, accesslogs)
+# --------------------------------------------- #
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub '${AWS::StackName}'
+      LifecycleConfiguration:
+        Rules:
+          - Id: NoncurrentVersionExpiration
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 45
+      LoggingConfiguration:
+        DestinationBucketName: !Ref 'S3BucketAccesslogs'
+        LogFilePrefix: !Sub 's3/${AWS::StackName}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: false
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: false
+      VersioningConfiguration:
+        Status: Enabled
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: 404.html
+      Tags:
+        - Key: CloudFormationArn
+          Value: !Sub '${AWS::StackName}'
+
+  S3BucketAccesslogs:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      AccessControl: LogDeliveryWrite
+      BucketName: !Sub '${AWS::StackName}-accesslogs-${AWS::Region}-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: AutoDelete
+            Status: Enabled
+            ExpirationInDays: 15
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: CloudFormationArn
+          Value: !Sub '${AWS::StackName}'
+
+# --------------------------------------------- #
+# S3 BucketPolicy (webhosting)
+# --------------------------------------------- #
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref 'S3Bucket'
+      PolicyDocument:
+        Id: !Sub '${AWS::StackName}-BucketPolicy'
+        Statement:
+          - Sid: AddPerm
+            Effect: Allow
+            Principal: '*'
+            Action:
+              - s3:GetObject
+            Resource:
+              - !Sub 'arn:aws:s3:::${S3Bucket}/*'
+            Condition:
+              StringEquals:
+                aws:UserAgent: Amazon CloudFront
+          - Sid: AddPerm
+            Effect: Allow
+            Principal: '*'
+            Action:
+              - s3:GetObject
+            Resource:
+              - !Sub 'arn:aws:s3:::${S3Bucket}/*'
+            Condition:
+              IpAddress:
+                aws:SourceIp:
+                  - 127.0.0.1/32
+                  #- 0.0.0.0/0
+                  #- ::/0
+
+# --------------------------------------------- #
+# CloudFront::Distribution
+# --------------------------------------------- #
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Origins:
+          - Id: CustomOrigin
+            DomainName: !Sub '${S3Bucket}.s3-website-${AWS::Region}.amazonaws.com'
+            CustomOriginConfig:
+              HTTPPort: 80
+              OriginProtocolPolicy: http-only
+        Enabled: true
+        DefaultRootObject: index.html
+        Logging:
+          IncludeCookies: 'false'
+          Bucket: !Sub '${S3BucketAccesslogs}.s3-${AWS::Region}.amazonaws.com'
+          Prefix: !Sub 'cloudfront/${AWS::StackName}'
+        CustomErrorResponses:
+          - ErrorCachingMinTTL: 300
+            ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+        Comment: !Sub '${AWS::StackName}-distribution'
+        DefaultCacheBehavior:
+          TargetOriginId: CustomOrigin
+          ForwardedValues:
+            QueryString: false
+          DefaultTTL: 300
+          MaxTTL: 300
+          MinTTL: 300
+          ViewerProtocolPolicy: redirect-to-https
+        #Aliases:
+        #- dummy.example.com
+        #ViewerCertificate:
+        #  SslSupportMethod: sni-only
+        #  AcmCertificateArn: arn:aws:acm:us-east-1:000000000000:certificate/dummy-example-com
+      Tags:
+        - Key: CloudFormationArn
+          Value: !Sub '${AWS::StackName}'
+
+# --------------------------------------------- #
+# IAM::Role
+# --------------------------------------------- #
+  IamRoleS3access:
+    Condition: IsS3RoleEnable
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'iam-role-${AWS::StackName}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Ref 'IamUserArn'
+            Action: sts:AssumeRole
+            Condition:
+              Bool:
+                aws:MultiFactorAuthPresent: 'true'
+              IpAddress:
+                aws:SourceIp:
+                  - 0.0.0.0/0
+                  - ::/0
+      Policies:
+        - PolicyName: S3accessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListAllMyBuckets
+                  - s3:GetBucketLocation
+                Resource:
+                  - arn:aws:s3:::*
+              - Effect: Allow
+                Action:
+                  - s3:*
+                Resource:
+                  - !Sub 'arn:aws:s3:::${S3Bucket}/*'
+                  - !Sub 'arn:aws:s3:::${S3Bucket}'
+              - Effect: Deny
+                Action:
+                  - s3:PutBucket*
+                  - s3:CreateBucket
+                  - s3:DeleteBucket
+                  - s3:PutObjectAcl
+                  - s3:PutObjectVersionAcl
+                Resource:
+                  - arn:aws:s3:::*
+              - Effect: Allow
+                Action:
+                  - cloudfront:Get*
+                  - cloudfront:List*
+                Resource:
+                  - '*'
+              - Effect: Allow
+                Action:
+                  - cloudfront:CreateInvalidation
+                Resource:
+                  - !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}'
+
+# --------------------------------------------- #
+# IAM::Role
+# --------------------------------------------- #
+Outputs:
+  CloudFrontDomainName:
+    Value: !GetAtt 'CloudFrontDistribution.DomainName'
