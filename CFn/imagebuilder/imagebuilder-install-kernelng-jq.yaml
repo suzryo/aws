@@ -1,0 +1,251 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ImageBuilder sample template (kernel-ng,jq)
+Resources:
+# --------------------------------------------- #
+# IAM
+# --------------------------------------------- #
+  Ec2IAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/EC2InstanceProfileForImageBuilder
+
+  Ec2RolePolicies:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: Ec2RolePolicies
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - s3:List*
+          Resource:
+          - '*'
+        - Effect: Allow
+          Action:
+          - s3:*
+          Resource:
+            - !Sub 'arn:aws:s3:::${S3Bucketlog}'
+            - !Sub 'arn:aws:s3:::${S3Bucketlog}/*'
+      Roles:
+      - !Ref 'Ec2IAMRole'
+
+  Ec2IAMProfile:
+    Type: AWS::IAM::InstanceProfile
+    DependsOn: Ec2IAMRole
+    Properties:
+      Path: /
+      Roles:
+        - !Ref 'Ec2IAMRole'
+
+
+# --------------------------------------------- #
+# S3 Bucket (log) 
+# --------------------------------------------- #
+  S3Bucketlog:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-log-${AWS::Region}-${AWS::AccountId}'
+      LifecycleConfiguration:
+        Rules:
+          - Id: AutoDelete
+            Status: Enabled
+            ExpirationInDays: 14
+          - Id: NoncurrentVersionExpiration
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 7
+          - Id: AbortIncompleteMultipartUpload
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: StackId
+          Value: !Sub '${AWS::StackId}'
+
+# --------------------------------------------- #
+# ImageBuilder::Component
+# --------------------------------------------- #
+  BuildComponent:
+    Type: AWS::ImageBuilder::Component
+    Properties:
+      Data: |
+        name: yum_install
+        description: jq_install
+        schemaVersion: 1.0
+        phases:
+          - name: build
+            steps:
+              - name: UpdateOS
+                action: UpdateOS
+              - name: yum_update
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - yum update -y
+              - name: jq_install
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - yum install jq -y
+              - name: kernelng_install
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - amazon-linux-extras install -y kernel-ng
+          - name: validate
+            steps:
+              - name: jq_install
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - rpm -qi jq
+      Name: !Sub '${AWS::StackName}-build'
+      Platform: Linux
+      Version: 1.0.0
+  TestComponent:
+    Type: AWS::ImageBuilder::Component
+    Properties:
+      Data: |
+        name: jq_test
+        description: jq_test
+        schemaVersion: 1.0
+        phases:
+          - name: test
+            steps:
+              - name: check_status
+                action: ExecuteBash
+                inputs:
+                  commands:
+                    - jq --version
+      Name: !Sub '${AWS::StackName}-test'
+      Platform: Linux
+      Version: 1.0.0
+
+# --------------------------------------------- #
+# ImageBuilder::ImageRecipe
+# --------------------------------------------- #
+  ImageRecipe:
+    Type: AWS::ImageBuilder::ImageRecipe
+    Properties:
+      Components:
+        - ComponentArn: !Ref 'BuildComponent'
+        - ComponentArn: !Ref 'TestComponent'
+      Name: !Sub '${AWS::StackName}-Recipe'
+      ParentImage: !Sub 'arn:aws:imagebuilder:${AWS::Region}:aws:image/amazon-linux-2-x86/x.x.x'
+      Version: 1.0.0
+
+# --------------------------------------------- #
+# ImageBuilder::InfrastructureConfiguration
+# --------------------------------------------- #
+  InfrastructureConfiguration:
+    Type: AWS::ImageBuilder::InfrastructureConfiguration
+    Properties:
+      InstanceProfileName: !Ref 'Ec2IAMProfile'
+      InstanceTypes:
+        - t3.small
+      Name: !Sub '${AWS::StackName}-InfrastructureConfiguration'
+      SecurityGroupIds: []
+      TerminateInstanceOnFailure: true
+      Logging:
+        S3Logs:
+          S3BucketName: !Ref 'S3Bucketlog'
+          S3KeyPrefix: !Sub '${AWS::StackName}'
+
+# --------------------------------------------- #
+# ImageBuilder::Image
+# --------------------------------------------- #
+  Image:
+    Type: AWS::ImageBuilder::Image
+    Properties:
+      ImageRecipeArn: !Ref 'ImageRecipe'
+      InfrastructureConfigurationArn: !Ref 'InfrastructureConfiguration'
+      ImageTestsConfiguration:
+        ImageTestsEnabled: true
+        TimeoutMinutes: 60
+      Tags:
+        CmBillingGroup: ImageBuilder
+
+# --------------------------------------------- #
+# ImageBuilder::Parameter
+# --------------------------------------------- #
+  Parameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      DataType: aws:ec2:image
+      Name: !Sub '${AWS::StackName}-amiid'
+      Type: String
+      Value: !GetAtt 'Image.ImageId'
+      Description: !Sub '${AWS::StackName}-amiid'
+
+# --------------------------------------------- #
+# LaunchTemplate
+# --------------------------------------------- #
+  Ec2LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        TagSpecifications:
+        - ResourceType: instance
+          Tags:
+          - Key: Name
+            Value: !Sub '${AWS::StackName}'
+        - ResourceType: volume
+          Tags:
+          - Key: Name
+            Value: !Sub '${AWS::StackName}'
+        IamInstanceProfile:
+          Arn: !GetAtt 'Ec2IAMProfile.Arn'
+        ImageId: !Sub '{{resolve:ssm:${Parameter}:1}}' 
+        #ImageId: !GetAtt 'Image.ImageId'
+        InstanceType: t3.small
+
+# --------------------------------------------- #
+# AutoScalingGroup
+# --------------------------------------------- #
+  Ec2AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AvailabilityZones: !GetAZs ''
+      DesiredCapacity: 1
+      MinSize: 0
+      MaxSize: 1
+      HealthCheckType: EC2
+      MixedInstancesPolicy:
+        InstancesDistribution:
+          OnDemandBaseCapacity: 0
+          OnDemandPercentageAboveBaseCapacity: 0
+        LaunchTemplate:
+          LaunchTemplateSpecification:
+            LaunchTemplateId: !Ref 'Ec2LaunchTemplate'
+            Version: !GetAtt 'Ec2LaunchTemplate.LatestVersionNumber'
+          Overrides:
+            - InstanceType: t3a.micro
+            - InstanceType: t3.micro
+
+# --------------------------------------------- #
+# Outputs
+# --------------------------------------------- #
+Outputs:
+  Image:
+    Description: AWS::ImageBuilder::Image
+    Value: !Ref 'Image'
+  ImageId:
+    Description: OutputResources
+    Value: !GetAtt 'Image.ImageId'
