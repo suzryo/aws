@@ -1,0 +1,205 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: KinesisFirehose HttpEndpointDestination (datadog) for GuardDuty
+
+# --------------------------------------------- #
+# Parameters
+# --------------------------------------------- #
+Parameters:
+  DatadogAccessKey:
+    Description: Datadog logs AccessKey
+    Type: String
+    Default: 0123456789abcdef0123456789abcdef
+    NoEcho: true
+
+Resources:
+
+# --------------------------------------------- #
+# GuardDuty 
+# --------------------------------------------- #
+  GuardDutyDetector:
+    Condition: EnableGuardDutyDetector
+    Type: "AWS::GuardDuty::Detector"
+    Properties:
+      Enable: true
+
+# --------------------------------------------- #
+# EventBridge 
+# --------------------------------------------- #
+  EventsRuleGuardDutyFinding:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: EventRule
+      EventPattern:
+        source:
+          - aws.guardduty
+        detail-type:
+          - GuardDuty Finding
+      State: ENABLED
+      Targets:
+      - Arn: !GetAtt 'FirehoseStream.Arn'
+        Id: EventsRuleGuardDutyFinding
+        RoleArn: !GetAtt 'EventBridgeRole.Arn'
+
+# --------------------------------------------- #
+# KinesisFirehose
+# --------------------------------------------- #
+  FirehoseStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: !Sub 'aws-waf-logs-${AWS::StackName}'
+      HttpEndpointDestinationConfiguration:
+        EndpointConfiguration:
+          AccessKey: !Ref 'DatadogAccessKey'
+          Url: https://aws-kinesis-http-intake.logs.datadoghq.com/v1/input
+          Name: Datadog
+        BufferingHints:
+          SizeInMBs: 4
+          IntervalInSeconds: 60
+        CloudWatchLoggingOptions:
+          Enabled: true
+          LogGroupName: !Ref 'LogGroupFirehose'
+          LogStreamName: HttpEndpointDelivery
+        RequestConfiguration:
+          ContentEncoding: GZIP
+          CommonAttributes: []
+        ProcessingConfiguration:
+          Enabled: false
+          Processors: []
+        RoleARN: !GetAtt 'FirehoseStreamRole.Arn'
+        RetryOptions:
+          DurationInSeconds: 60
+        S3BackupMode: FailedDataOnly
+        S3Configuration:
+          RoleARN: !GetAtt 'FirehoseStreamRole.Arn'
+          BucketARN: !Sub 'arn:aws:s3:::${S3BucketFirehose}'
+          Prefix: !Sub '${AWS::StackName}-backup/'
+          ErrorOutputPrefix: !Sub '${AWS::StackName}-error/'
+          BufferingHints:
+            SizeInMBs: 10
+            IntervalInSeconds: 600
+          CompressionFormat: GZIP
+          EncryptionConfiguration:
+            NoEncryptionConfig: NoEncryption
+          CloudWatchLoggingOptions:
+            Enabled: true
+            LogGroupName: !Ref 'LogGroupFirehose'
+            LogStreamName: S3Delivery
+
+# --------------------------------------------- #
+# IAM Role/Policy
+# --------------------------------------------- #
+
+  EventBridgeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: firehose-putrecord
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - firehose:PutRecord
+                  - firehose:PutRecords
+                Resource: !GetAtt 'FirehoseStream.Arn'
+
+  FirehoseStreamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ''
+            Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref 'AWS::AccountId'
+
+  FirehoseStreamPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: firehose_delivery_policy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:PutLogEvents
+            Resource:
+              - !Sub '${LogGroupFirehose.Arn}:log-stream:*'
+          - Effect: Allow
+            Action:
+              - s3:AbortMultipartUpload
+              - s3:GetBucketLocation
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:ListBucketMultipartUploads
+              - s3:PutObject
+            Resource:
+              - !Sub 'arn:aws:s3:::${S3BucketFirehose}'
+              - !Sub 'arn:aws:s3:::${S3BucketFirehose}/*'
+      Roles:
+        - !Ref 'FirehoseStreamRole'
+
+# --------------------------------------------- #
+# CloudWatch LogGroup
+# --------------------------------------------- #
+  LogGroupFirehose:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName:  !Sub '/aws/firehose/${AWS::StackName}'
+      RetentionInDays: 7
+  LogStreamS3Delivery:
+    Type: AWS::Logs::LogStream
+    Properties:
+      LogGroupName: !Ref 'LogGroupFirehose'
+      LogStreamName: S3Delivery
+  LogStreamHttpEndpointDelivery:
+    Type: AWS::Logs::LogStream
+    Properties:
+      LogGroupName: !Ref 'LogGroupFirehose'
+      LogStreamName: HttpEndpointDelivery
+
+# --------------------------------------------- #
+# S3 Bucket
+# --------------------------------------------- #
+  S3BucketFirehose:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-s3-${AWS::Region}-${AWS::AccountId}'
+      AccessControl: LogDeliveryWrite
+      LifecycleConfiguration:
+        Rules:
+          - Id: AutoDelete
+            Status: Enabled
+            ExpirationInDays: 14
+          - Id: NoncurrentVersionExpiration
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 7
+          - Id: AbortIncompleteMultipartUpload
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: StackId
+          Value: !Sub '${AWS::StackId}'
+      VersioningConfiguration:
+        Status: Enabled
