@@ -1,0 +1,388 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: WAF log processing pipeline (Firehose, Lambda, S3, Datadog)
+# waf-log-firehose-lambda-s3-datadog.yaml
+
+# --------------------------------------------- #
+# Parameters
+# --------------------------------------------- #
+Parameters:
+  DatadogAccessKey:
+    Description: Datadog logs AccessKey
+    Type: String
+    Default: 12345678901234567890123456789012
+    NoEcho: true
+
+Resources:
+# --------------------------------------------- #
+# KinesisFirehose
+# --------------------------------------------- #
+  # All
+  FirehoseStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: !Sub 'aws-waf-logs-${AWS::StackName}'
+      DeliveryStreamType: DirectPut
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !Sub 'arn:aws:s3:::${S3BucketFirehose}'
+        BufferingHints:
+          SizeInMBs: 100
+          IntervalInSeconds: 900
+        CloudWatchLoggingOptions:
+          Enabled: true
+          LogGroupName: !Ref 'LogGroupFirehose'
+          LogStreamName: !Ref 'LogStreamS3Delivery'
+        CompressionFormat: GZIP
+        ErrorOutputPrefix: !Sub '${AWS::StackName}/error/all/'
+        Prefix: !Sub '${AWS::StackName}/all/'
+        ProcessingConfiguration:
+          Enabled: true
+          Processors:
+            - Type: Lambda
+              Parameters:
+                - ParameterName: LambdaArn
+                  ParameterValue: !Sub '${LambdaFunction.Arn}:$LATEST'
+                - ParameterName: NumberOfRetries
+                  ParameterValue: '3'
+                - ParameterName: RoleArn
+                  ParameterValue: !GetAtt 'FirehoseStreamRole.Arn'
+                - ParameterName: BufferSizeInMBs
+                  ParameterValue: '1'
+                - ParameterName: BufferIntervalInSeconds
+                  ParameterValue: '60'
+        RoleARN: !GetAtt 'FirehoseStreamRole.Arn'
+
+  FirehoseStreamBlock:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: !Sub 'waf-logs-${AWS::StackName}-block'
+      HttpEndpointDestinationConfiguration:
+        EndpointConfiguration:
+          AccessKey: !Ref 'DatadogAccessKey'
+          Url: https://aws-kinesis-http-intake.logs.datadoghq.com/v1/input
+          Name: Datadog
+        BufferingHints:
+          SizeInMBs: 4
+          IntervalInSeconds: 60
+        CloudWatchLoggingOptions:
+          Enabled: true
+          LogGroupName: !Ref 'LogGroupFirehose'
+          LogStreamName: !Ref 'LogStreamHttpEndpointDeliveryBlock'
+        RequestConfiguration:
+          ContentEncoding: GZIP
+          CommonAttributes: []
+        RoleARN: !GetAtt 'FirehoseStreamRole.Arn'
+        RequestConfiguration:
+          CommonAttributes:
+            - AttributeName: service_tag
+              AttributeValue: waf
+            - AttributeName: severity_tag
+              AttributeValue: error
+            - AttributeName: action_tag
+              AttributeValue: block
+        RetryOptions:
+          DurationInSeconds: 60
+        S3BackupMode: AllData
+        S3Configuration:
+          RoleARN: !GetAtt 'FirehoseStreamRole.Arn'
+          BucketARN: !Sub 'arn:aws:s3:::${S3BucketFirehose}'
+          Prefix: !Sub '${AWS::StackName}/block/'
+          ErrorOutputPrefix: !Sub '${AWS::StackName}/error/block/'
+          BufferingHints:
+            SizeInMBs: 100
+            IntervalInSeconds: 900
+          CompressionFormat: GZIP
+          CloudWatchLoggingOptions:
+            Enabled: true
+            LogGroupName: !Ref 'LogGroupFirehose'
+            LogStreamName: !Ref 'LogStreamS3DeliveryBlock'
+
+  FirehoseStreamCount:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: !Sub 'waf-logs-${AWS::StackName}-count'
+      HttpEndpointDestinationConfiguration:
+        EndpointConfiguration:
+          AccessKey: !Ref 'DatadogAccessKey'
+          Url: https://aws-kinesis-http-intake.logs.datadoghq.com/v1/input
+          Name: Datadog
+        BufferingHints:
+          SizeInMBs: 4
+          IntervalInSeconds: 60
+        CloudWatchLoggingOptions:
+          Enabled: true
+          LogGroupName: !Ref 'LogGroupFirehose'
+          LogStreamName: !Ref 'LogStreamHttpEndpointDeliveryCount'
+        RequestConfiguration:
+          ContentEncoding: GZIP
+          CommonAttributes: []
+        RoleARN: !GetAtt 'FirehoseStreamRole.Arn'
+        RequestConfiguration:
+          CommonAttributes:
+            - AttributeName: service_tag
+              AttributeValue: waf
+            - AttributeName: severity_tag
+              AttributeValue: warn
+            - AttributeName: action_tag
+              AttributeValue: count
+        RetryOptions:
+          DurationInSeconds: 60
+        S3BackupMode: AllData 
+        S3Configuration:
+          RoleARN: !GetAtt 'FirehoseStreamRole.Arn'
+          BucketARN: !Sub 'arn:aws:s3:::${S3BucketFirehose}'
+          Prefix: !Sub '${AWS::StackName}/count/'
+          ErrorOutputPrefix: !Sub '${AWS::StackName}/error/count/'
+          BufferingHints:
+            SizeInMBs: 100
+            IntervalInSeconds: 900
+          CompressionFormat: GZIP
+          CloudWatchLoggingOptions:
+            Enabled: true
+            LogGroupName: !Ref 'LogGroupFirehose'
+            LogStreamName: !Ref 'LogStreamS3DeliveryCount'
+
+# --------------------------------------------- #
+# Lambda
+# --------------------------------------------- #
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt 'LambdaRole.Arn'
+      Code:
+        ZipFile: !Sub |
+          import base64
+          import json
+          import boto3
+          import os
+
+          def lambda_handler(event, context):
+            output = []
+            output_block = []
+            output_count = []
+
+            for record in event['records']:
+              output_record = {
+                'recordId': record['recordId'],
+                'result': 'Ok',
+                'data': record['data']
+              }
+              output.append(output_record)
+
+              # pickup log (block, count)
+              a = base64.b64decode(record['data'])
+              try:
+                b = json.loads(a)
+              except ValueError as e:
+                pass
+              else:
+                # Block
+                if b['action'] != 'ALLOW':
+                  print('BLOCK: ' + record['recordId'])
+                  output_block.append(b)
+                # Count
+                elif len(b['nonTerminatingMatchingRules']) > 0:
+                  output_count.append(b)
+
+            print('Processed: {} records.'.format(len(event['records'])))
+
+            if len(output_block) > 0:
+              s = os.environ['firehose_block']
+              print('Block {} records.'.format(len(output_block)))
+              put_record_firehose(s, output_block)
+
+            if len(output_count) > 0:
+              s = os.environ['firehose_count']
+              print('Count {} records.'.format(len(output_count)))
+              put_record_firehose(s, output_count)
+
+            return {'records': output}
+
+          def put_record_firehose(s, output2):
+            firehose = boto3.client('firehose')
+            u = []
+            for t in output2:
+              u.append({'Data': json.dumps(t) + "\n"})
+              if len(u) > 600 or len(str(u)) > 600000:
+                r = firehose.put_record_batch(DeliveryStreamName = s, Records = u)
+                u = []
+            if len(u) > 0:
+              r = firehose.put_record_batch(DeliveryStreamName = s, Records = u)
+              if r['FailedPutCount'] > 0:
+                print (json.dumps(r))
+              if len(r['RequestResponses']) >0:
+                print ('SuccessRequest :' + str(len(r['RequestResponses'])))
+
+      Runtime: python3.7
+      MemorySize: 128
+      Timeout: 120
+      Description: Filter to only Block and Count from AWS WAF log
+      Environment:
+        Variables:
+          firehose_block: !Ref 'FirehoseStreamBlock'
+          firehose_count: !Ref 'FirehoseStreamCount'
+      Tags:
+        - Key: CloudformationArn
+          Value: !Ref 'AWS::StackId'
+
+# --------------------------------------------- #
+# IAM Role/Policy
+# --------------------------------------------- #
+  FirehoseStreamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ''
+            Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref 'AWS::AccountId'
+
+  FirehoseStreamPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: firehose_delivery_policy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:PutLogEvents
+            Resource:
+              - !Sub '${LogGroupFirehose.Arn}:log-stream:*'
+          - Effect: Allow
+            Action:
+              - lambda:InvokeFunction
+              - lambda:GetFunctionConfiguration
+            Resource:
+              - !Sub '${LambdaFunction.Arn}:*'
+          - Effect: Allow
+            Action:
+              - s3:AbortMultipartUpload
+              - s3:GetBucketLocation
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:ListBucketMultipartUploads
+              - s3:PutObject
+            Resource:
+              - !Sub 'arn:aws:s3:::${S3BucketFirehose}'
+              - !Sub 'arn:aws:s3:::${S3BucketFirehose}/*'
+      Roles:
+        - !Ref 'FirehoseStreamRole'
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*'
+              - Effect: Allow
+                Action:
+                  - firehose:PutRecordBatch
+                Resource: 
+                  - '*'
+
+# --------------------------------------------- #
+# CloudWatch LogGroup
+# --------------------------------------------- #
+
+  LogGroupLambda:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${LambdaFunction}'
+      RetentionInDays: 7
+
+  LogGroupFirehose:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/firehose/aws-waf-logs-${AWS::StackName}'
+      RetentionInDays: 7
+
+  LogStreamS3Delivery:
+    Type: AWS::Logs::LogStream
+    Properties:
+      LogGroupName: !Ref 'LogGroupFirehose'
+      LogStreamName: S3Delivery
+  LogStreamS3DeliveryBlock:
+    Type: AWS::Logs::LogStream
+    Properties:
+      LogGroupName: !Ref 'LogGroupFirehose'
+      LogStreamName: S3Delivery-block
+  LogStreamS3DeliveryCount:
+    Type: AWS::Logs::LogStream
+    Properties:
+      LogGroupName: !Ref 'LogGroupFirehose'
+      LogStreamName: S3Delivery-count
+  LogStreamHttpEndpointDeliveryBlock:
+    Type: AWS::Logs::LogStream
+    Properties:
+      LogGroupName: !Ref 'LogGroupFirehose'
+      LogStreamName: HttpEndpointDelivery-block
+  LogStreamHttpEndpointDeliveryCount:
+    Type: AWS::Logs::LogStream
+    Properties:
+      LogGroupName: !Ref 'LogGroupFirehose'
+      LogStreamName: HttpEndpointDelivery-count
+
+# --------------------------------------------- #
+# S3 Bucket
+# --------------------------------------------- #
+  S3BucketFirehose:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-s3-${AWS::Region}-${AWS::AccountId}'
+      AccessControl: LogDeliveryWrite
+      LifecycleConfiguration:
+        Rules:
+          - Id: AutoDelete
+            Status: Enabled
+            ExpirationInDays: 14
+          - Id: NoncurrentVersionExpiration
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 7
+          - Id: AbortIncompleteMultipartUpload
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: StackId
+          Value: !Sub '${AWS::StackId}'
+      VersioningConfiguration:
+        Status: Enabled
+
+
+
