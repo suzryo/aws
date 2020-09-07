@@ -1,0 +1,258 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: SSM SendCommand for EC2 AutoScaling (AmazonLinux2)
+
+# --------------------------------------------- #
+# Parameters
+# --------------------------------------------- #
+Parameters:
+  Ec2ImageId:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-ebs
+  DesiredCapacity:
+    Type: String
+    Default: 0
+  AllowIpAssumeRole:
+    Description: Allow IP range (STS AssumeRole)
+    Type: String
+    Default: 0.0.0.0/0
+
+Resources:
+# --------------------------------------------- #
+# IAM (EC2)
+# --------------------------------------------- #
+  Ec2IAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies: !Ref 'AWS::NoValue'
+      RoleName: !Ref 'AWS::NoValue'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+  Ec2IAMProfile:
+    Type: AWS::IAM::InstanceProfile
+    DependsOn: Ec2IAMRole
+    Properties:
+      Path: /
+      Roles:
+        - !Ref 'Ec2IAMRole'
+
+# --------------------------------------------- #
+#  SecurityGroup
+# --------------------------------------------- #
+  SecurityGroupEc2:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SecurityGroup Ec2
+      SecurityGroupIngress:
+        - IpProtocol: icmp
+          FromPort: '-1'
+          ToPort: '-1'
+          CidrIp: 127.0.0.1/32
+
+# --------------------------------------------- #
+#  LaunchTemplate
+# --------------------------------------------- #
+  Ec2LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub '${AWS::StackName}'
+          - ResourceType: volume
+            Tags:
+              - Key: Name
+                Value: !Sub '${AWS::StackName}'
+        InstanceInitiatedShutdownBehavior: terminate
+        IamInstanceProfile:
+          Arn: !GetAtt 'Ec2IAMProfile.Arn'
+        KeyName: !Ref 'AWS::NoValue'
+        ImageId: !Ref 'Ec2ImageId'
+        InstanceType: t3.micro
+        SecurityGroupIds:
+          - !GetAtt 'SecurityGroupEc2.GroupId'
+        UserData: !Base64
+          Fn::Sub: |
+            #cloud-config
+            repo_update: true
+            repo_upgrade: all
+            packages:
+              - jq
+            runcmd:
+              - yum update amazon-ssm-agent
+
+# --------------------------------------------- #
+#  AutoScalingGroup
+# --------------------------------------------- #              
+  Ec2InstanceAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AvailabilityZones:
+        - !Select
+          - 0
+          - !GetAZs
+            Ref: AWS::Region
+        - !Select
+          - 1
+          - !GetAZs
+            Ref: AWS::Region
+      DesiredCapacity: !Ref 'DesiredCapacity'
+      MinSize: 0
+      MaxSize: 4
+      HealthCheckType: EC2
+      MixedInstancesPolicy:
+        InstancesDistribution:
+          OnDemandBaseCapacity: 0
+          OnDemandPercentageAboveBaseCapacity: 0
+          SpotAllocationStrategy: capacity-optimized
+        LaunchTemplate:
+          LaunchTemplateSpecification:
+            LaunchTemplateId: !Ref 'Ec2LaunchTemplate'
+            Version: !GetAtt 'Ec2LaunchTemplate.LatestVersionNumber'
+          Overrides:
+            - InstanceType: t3.micro
+            - InstanceType: t3a.micro
+
+# --------------------------------------------- #
+#  SSM Document
+# --------------------------------------------- #     
+  SsmDocument:
+    Type: AWS::SSM::Document
+    Properties:
+      Content:
+        schemaVersion: '2.2'
+        description: Run a script on Linux instances.
+        mainSteps:
+          - action: aws:runShellScript
+            name: runCommands
+            inputs:
+              timeoutSeconds: '60'
+              runCommand:
+                - uname -a
+                - systemctl status amazon-ssm-agent.service
+                - if [ $? -ne 0 ]; then exit 1; fi
+                - sleep 2
+      DocumentType: Command
+      Tags:
+        - Key: StackName
+          Value: !Sub '${AWS::StackName}'
+
+# --------------------------------------------- #
+#  IAM (allow ssm SendCommand)
+# --------------------------------------------- #
+  IamRoleSendCommand:
+    Type: AWS::IAM::Role
+    DependsOn: IamUserAssumeRole
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !GetAtt 'IamUserAssumeRole.Arn'
+            Action: 
+              - sts:AssumeRole
+              - sts:TagSession
+      Policies:
+        - PolicyName: allow_ssm_sendcomand
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:ListDocuments
+                  - ssm:ListDocumentVersions
+                  - ssm:DescribeDocument
+                  - ssm:DescribeInstanceInformation
+                  - ssm:DescribeDocumentParameters
+                  - ssm:DescribeInstanceProperties
+                  - ssm:GetDocument
+                NotResource:
+                  - '*'
+              - Effect: Allow
+                Action:
+                  - ssm:SendCommand
+                Resource:
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:document/${SsmDocument}'
+              - Effect: Allow
+                Action:
+                  - ssm:SendCommand
+                Resource:
+                  - !Sub 'arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/*'
+                Condition:
+                  StringEquals:
+                    ssm:ResourceTag/aws:autoscaling:groupName: !Ref 'Ec2InstanceAutoScalingGroup'
+      Tags:
+        - Key: StackName
+          Value: !Sub '${AWS::StackName}'
+
+  IamUserAssumeRole:
+    Type: AWS::IAM::User
+    Properties:
+      Policies:
+        - PolicyName: AllowAssumeSsmSendCommand
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource:
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/${AWS::StackName}-*'
+                Condition:
+                  IpAddress:
+                    aws:SourceIp:
+                    - !Ref 'AllowIpAssumeRole'
+              - Effect: Allow
+                Action:
+                  - sts:GetCallerIdentity
+                Resource:
+                  - '*'
+      Tags:
+        - Key: StackName
+          Value: !Sub '${AWS::StackName}'
+
+  IamAccessKeyAssumeRole:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref 'IamUserAssumeRole'
+
+# --------------------------------------------- #
+# Outputs
+# --------------------------------------------- #
+Outputs:
+#  step1:
+#    Description: set ACCESS_KEY
+#    Value: !Sub
+#      - export AWS_ACCESS_KEY_ID=${IamAccessKeyAssumeRole}; export AWS_SECRET_ACCESS_KEY=${SecretAccessKey};
+#        unset AWS_SESSION_TOKEN; aws sts get-caller-identity;
+#      - SecretAccessKey: !GetAtt 'IamAccessKeyAssumeRole.SecretAccessKey'
+#  step2:
+#    Description: sts assume-role
+#    Value: !Sub
+#      - TMP=`aws sts assume-role --role-arn ${rolearn} --role-session-name cli-session`
+#      - rolearn: !GetAtt 'IamRoleSendCommand.Arn'
+#  step3:
+#    Description: set SESSION_TOKEN
+#    Value: !Sub 'export AWS_ACCESS_KEY_ID=`echo $TMP| jq -r .Credentials.AccessKeyId`;
+#      export AWS_SECRET_ACCESS_KEY=`echo $TMP| jq -r .Credentials.SecretAccessKey`;
+#      export AWS_SESSION_TOKEN=`echo $TMP| jq -r .Credentials.SessionToken`;'
+#  step4:
+#    Description: check environment
+#    Value: !Sub 'unset TMP; set | grep "^AWS_"; curl https://checkip.amazonaws.com/'
+  step5:
+    Description: aws ssm send-command
+    Value: !Sub 'aws --region ${AWS::Region} ssm send-command 
+      --document-name "${SsmDocument}"
+      --targets "Key=tag:aws:autoscaling:groupName,Values=${Ec2InstanceAutoScalingGroup}"
+      --max-concurrency=1'
