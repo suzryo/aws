@@ -10,11 +10,20 @@ Parameters:
     Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-ebs
   DesiredCapacity:
     Type: String
-    Default: 0
+    Default: 3
   AllowIpAssumeRole:
     Description: Allow IP range (STS AssumeRole)
     Type: String
     Default: 0.0.0.0/0
+  OutputCliScripts:
+    Description: Output Cli Scripts
+    Type: String
+    Default: Disable
+    AllowedValues: 
+      - Enable
+      - Disable
+Conditions:
+  IsOutputCliScripts: !Equals [ !Ref OutputCliScripts, "Enable" ]
 
 Resources:
 # --------------------------------------------- #
@@ -131,7 +140,7 @@ Resources:
     Properties:
       Content:
         schemaVersion: '2.2'
-        description: Run a script on Linux instances.
+        description: Run a script on Linux (systemctl)
         mainSteps:
           - action: aws:runShellScript
             name: runCommands
@@ -139,9 +148,10 @@ Resources:
               timeoutSeconds: '60'
               runCommand:
                 - uname -a
+                #- systemctl status dummy
                 - systemctl status amazon-ssm-agent.service
                 - if [ $? -ne 0 ]; then exit 1; fi
-                - sleep 2
+                - sleep 10
       DocumentType: Command
       Tags:
         - Key: StackName
@@ -170,14 +180,8 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  - ssm:ListDocuments
-                  - ssm:ListDocumentVersions
-                  - ssm:DescribeDocument
-                  - ssm:DescribeInstanceInformation
-                  - ssm:DescribeDocumentParameters
-                  - ssm:DescribeInstanceProperties
-                  - ssm:GetDocument
-                NotResource:
+                  - ssm:ListCommandInvocations
+                Resource:
                   - '*'
               - Effect: Allow
                 Action:
@@ -226,33 +230,48 @@ Resources:
     Type: AWS::IAM::AccessKey
     Properties:
       UserName: !Ref 'IamUserAssumeRole'
+    Condition: IsOutputCliScripts
 
 # --------------------------------------------- #
 # Outputs
 # --------------------------------------------- #
 Outputs:
-#  step1:
-#    Description: set ACCESS_KEY
-#    Value: !Sub
-#      - export AWS_ACCESS_KEY_ID=${IamAccessKeyAssumeRole}; export AWS_SECRET_ACCESS_KEY=${SecretAccessKey};
-#        unset AWS_SESSION_TOKEN; aws sts get-caller-identity;
-#      - SecretAccessKey: !GetAtt 'IamAccessKeyAssumeRole.SecretAccessKey'
-#  step2:
-#    Description: sts assume-role
-#    Value: !Sub
-#      - TMP=`aws sts assume-role --role-arn ${rolearn} --role-session-name cli-session`
-#      - rolearn: !GetAtt 'IamRoleSendCommand.Arn'
-#  step3:
-#    Description: set SESSION_TOKEN
-#    Value: !Sub 'export AWS_ACCESS_KEY_ID=`echo $TMP| jq -r .Credentials.AccessKeyId`;
-#      export AWS_SECRET_ACCESS_KEY=`echo $TMP| jq -r .Credentials.SecretAccessKey`;
-#      export AWS_SESSION_TOKEN=`echo $TMP| jq -r .Credentials.SessionToken`;'
-#  step4:
-#    Description: check environment
-#    Value: !Sub 'unset TMP; set | grep "^AWS_"; curl https://checkip.amazonaws.com/'
+  step1:
+    Description: set ACCESS_KEY
+    Value: !Sub
+      - export AWS_ACCESS_KEY_ID=${IamAccessKeyAssumeRole}; export AWS_SECRET_ACCESS_KEY=${SecretAccessKey}; export AWS_DEFAULT_REGION=${AWS::Region};
+        unset AWS_SESSION_TOKEN; aws sts get-caller-identity;
+      - SecretAccessKey: !GetAtt 'IamAccessKeyAssumeRole.SecretAccessKey'
+    Condition: IsOutputCliScripts
+  step2:
+    Description: sts assume-role
+    Value: !Sub
+      - TMP=`aws sts assume-role --role-arn ${rolearn} --role-session-name cli-session`; echo $TMP;
+      - rolearn: !GetAtt 'IamRoleSendCommand.Arn'
+    Condition: IsOutputCliScripts
+  step3:
+    Description: set SESSION_TOKEN
+    Value: !Sub 'export AWS_ACCESS_KEY_ID=`echo $TMP| jq -r .Credentials.AccessKeyId`;
+      export AWS_SECRET_ACCESS_KEY=`echo $TMP| jq -r .Credentials.SecretAccessKey`;
+      export AWS_SESSION_TOKEN=`echo $TMP| jq -r .Credentials.SessionToken`;'
+    Condition: IsOutputCliScripts
+  step4:
+    Description: check environment
+    Value: !Sub 'unset TMP; set | grep "^AWS_"; curl https://checkip.amazonaws.com/'
+    Condition: IsOutputCliScripts
   step5:
-    Description: aws ssm send-command
-    Value: !Sub 'aws --region ${AWS::Region} ssm send-command 
-      --document-name "${SsmDocument}"
+    Description: ssm send-command
+    Value: !Sub 'TMP=`aws --region ${AWS::Region} 
+      ssm send-command --document-name "${SsmDocument}"
       --targets "Key=tag:aws:autoscaling:groupName,Values=${Ec2InstanceAutoScalingGroup}"
-      --max-concurrency=1'
+      --max-concurrency=1 --max-errors=0`; 
+      echo $TMP | jq .;
+      CommandId=`echo $TMP | jq -r .Command.CommandId`'
+    Condition: IsOutputCliScripts
+  step6:
+    Description: ssm list-command-invocations
+    Value: !Sub 'TMP=`aws --region ${AWS::Region}
+      ssm list-command-invocations --command-id $CommandId`;
+      echo $TMP | jq ''.CommandInvocations[]|{InstanceId:.InstanceId,Status:.Status,StatusDetails:.StatusDetails,RequestedDateTime:.RequestedDateTime}'''
+    Condition: IsOutputCliScripts
+
