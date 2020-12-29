@@ -399,7 +399,7 @@ Resources:
       ExtendedS3DestinationConfiguration:
         RoleARN: !GetAtt 'DeliveryRole.Arn'
         BucketARN: !Sub 'arn:aws:s3:::${S3bucketFirehose}'
-        Prefix: !Sub '${AWS::StackName}${GlueDbName}/${GlueTableName}/dt=!{timestamp:YYYY}-!{timestamp:MM}-!{timestamp:dd}/hour=!{timestamp:HH}/'
+        Prefix: !Sub '${AWS::StackName}${GlueDbName}/${GlueTableName}/dt=!{timestamp:yyyy}-!{timestamp:MM}-!{timestamp:dd}/hour=!{timestamp:HH}/'
         ErrorOutputPrefix: !Sub '${AWS::StackName}${GlueDbName}/${GlueTableName}-error/!{firehose:error-output-type}/dt=!{timestamp:YYYY}-!{timestamp:MM}-!{timestamp:dd}/hour=!{timestamp:HH}/'
         BufferingHints:
           SizeInMBs: 128
