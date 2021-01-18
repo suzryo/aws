@@ -153,7 +153,7 @@ Resources:
   CloudWatchAgentParameter:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: !Sub 'AmazonCloudWatch-${AWS::StackName}-${Ec2InstanceTagName}-cloudwatch-agent-config'
+      Name: !Sub 'AmazonCloudWatch-${AWS::StackName}-${Ec2InstanceName}-cloudwatch-agent-config'
       Type: String
       Value: !Sub |
         {
